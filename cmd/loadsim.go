@@ -26,21 +26,27 @@ func main() {
 	agents := []loadsim.Agent{
 		&loadsim.RepeatAgent{
 			BaseRequest: getreq,
+			Clock:       &loadsim.WallClock{},
 		},
 		&loadsim.RepeatAgent{
 			BaseRequest: badreq,
+			Clock:       &loadsim.WallClock{},
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: badreq,
 			Interval:    time.Second * 2,
+			Clock:       &loadsim.WallClock{},
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: badreq,
 			Interval:    time.Millisecond * 50,
+			Clock:       &loadsim.WallClock{},
 		},
 	}
 
-	results := loadsim.Simulate(agents, loadsim.HTTPWorker{})
+	results := loadsim.Simulate(agents, loadsim.HTTPWorker{
+		Clock: &loadsim.WallClock{},
+	})
 
 	allCodes := make(map[int]struct{})
 	for _, data := range results {
@@ -66,7 +72,7 @@ func main() {
 		codeCounts := make(map[int]int, len(codes))
 		durations := make([]float64, len(data))
 		for i, datum := range data {
-			durations[i] = datum.Duration.Seconds() * 1000
+			durations[i] = datum.End.Sub(datum.Start).Seconds() * 1000
 			codeCounts[datum.StatusCode]++
 		}
 		med, err := stats.Median(durations)

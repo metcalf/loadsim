@@ -54,11 +54,12 @@ func (a *RepeatAgent) String() string {
 type IntervalAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
-	Interval    time.Duration
 	Clock       interface {
 		Now() time.Time
-		Tick()
+		Tick() <-chan time.Time
+		Stop()
 	}
+	Interval time.Duration
 }
 
 func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
@@ -66,7 +67,7 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 	var wg sync.WaitGroup
 
 	go func() {
-		ticker := time.NewTicker(a.Interval)
+		ticker := a.Clock.Tick()
 		for {
 			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 			queue <- task
@@ -82,16 +83,18 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 				wg.Done()
 			}(task.Result)
 
-			select {
-			case <-stop:
-				wg.Wait()
-				close(results)
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				continue
+			end := a.Clock.Now().Add(a.Interval)
+			var now time.Time
+			for now.Before(end) {
+				select {
+				case <-stop:
+					wg.Wait()
+					close(results)
+					a.Clock.Stop()
+					return
+				case now = <-ticker:
+				}
 			}
-
 		}
 	}()
 

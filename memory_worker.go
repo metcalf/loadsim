@@ -28,8 +28,8 @@ type SimWorker struct {
 	ResourceMap ResourceMap
 	Resources   []Resource
 	Clock       interface {
-		Tick() time.Time // Wait for the next tick of the clock.
-		Done()           // Done waiting on the clock for now
+		Tick() <-chan time.Time // Return a channel that ticks with the clock.
+		Done()                  // Done waiting on the clock for now
 	}
 }
 
@@ -41,9 +41,7 @@ func (w *SimWorker) Run(queue <-chan Task) {
 			continue
 		}
 
-		for {
-			now := w.Clock.Tick()
-
+		for now := range w.Clock.Tick() {
 			need := needs[0]
 
 			// TODO: optimize this with a map
@@ -72,8 +70,14 @@ func (w *SimWorker) Run(queue <-chan Task) {
 
 type WorkerPool struct {
 	Backlog int
+	// TODO: Actually use timeouts
 	Timeout time.Duration
 	Workers []Worker
+
+	Clock interface {
+		Tick() <-chan time.Time // Return a channel that ticks with the clock.
+		Done()                  // Done waiting on the clock for now
+	}
 }
 
 func (w *WorkerPool) Run(queue <-chan Task) {
@@ -106,58 +110,4 @@ func (w *WorkerPool) Run(queue <-chan Task) {
 	}
 	close(workerQueue)
 	wg.Wait()
-}
-
-type WorkClock struct {
-	wg      sync.WaitGroup
-	ticker  chan time.Time
-	started bool
-}
-
-func (c *WorkClock) Tick() time.Time {
-	if c.started {
-		c.wg.Done()
-	} else {
-		c.started = true
-	}
-
-	now := <-c.ticker
-	c.wg.Add(1)
-
-	return now
-}
-
-func (c *WorkClock) Done() {
-	c.started = false
-	c.wg.Done()
-}
-
-type SimClock struct {
-	clocks []WorkClock
-	wg     sync.WaitGroup
-}
-
-func (c *SimClock) Run() {
-	var now time.Time
-	for {
-		c.wg.Wait()
-		now = now.Add(time.Millisecond)
-
-		for _, clock := range c.clocks {
-			if clock.started {
-				clock.ticker <- now
-			}
-		}
-
-	}
-}
-
-func (c *SimClock) Clock() WorkClock {
-	clock := WorkClock{
-		wg:     c.wg,
-		ticker: make(chan time.Time),
-	}
-	c.clocks = append(c.clocks)
-
-	return clock
 }
