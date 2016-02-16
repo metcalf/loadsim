@@ -16,9 +16,7 @@ type Agent interface {
 type RepeatAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
-	Clock       interface {
-		Now() time.Time
-	}
+	Clock       Clock
 }
 
 func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
@@ -28,8 +26,8 @@ func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result
 		for {
 			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 			queue <- task
-
 			start := a.Clock.Now()
+
 			res := <-task.Result
 			res.Start = start
 			results <- res
@@ -39,7 +37,6 @@ func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result
 				close(results)
 				return
 			default:
-				continue
 			}
 		}
 	}()
@@ -54,12 +51,8 @@ func (a *RepeatAgent) String() string {
 type IntervalAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
-	Clock       interface {
-		Now() time.Time
-		Tick() <-chan time.Time
-		Stop()
-	}
-	Interval time.Duration
+	Clock       Clock
+	Interval    time.Duration
 }
 
 func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
@@ -67,15 +60,14 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 	var wg sync.WaitGroup
 
 	go func() {
-		ticker := a.Clock.Tick()
 		for {
+			start := a.Clock.Now()
 			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 			queue <- task
 
 			go func(rc <-chan Result) {
 				wg.Add(1)
 
-				start := a.Clock.Now()
 				res := <-rc
 				res.Start = start
 				results <- res
@@ -83,18 +75,20 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 				wg.Done()
 			}(task.Result)
 
-			end := a.Clock.Now().Add(a.Interval)
-			var now time.Time
+			end := start.Add(a.Interval)
+			now := start
+			ticker := a.Clock.Tick()
 			for now.Before(end) {
 				select {
 				case <-stop:
 					wg.Wait()
 					close(results)
-					a.Clock.Stop()
+					a.Clock.Done()
 					return
 				case now = <-ticker:
 				}
 			}
+			a.Clock.Done()
 		}
 	}()
 

@@ -1,6 +1,7 @@
 package loadsim
 
 import (
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +14,63 @@ import (
 type Resource interface {
 	Name() string
 	Ask(int) int
+	Reset()
+}
+
+type TimeResource struct {
+	have  bool
+	mutex sync.Mutex
+}
+
+func (c *TimeResource) Name() string { return "time" }
+func (c *TimeResource) Ask(i int) int {
+	if i == 0 {
+		return 0
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.have {
+		c.have = false
+		return 1
+	}
+	return 0
+}
+func (c *TimeResource) Reset() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.have = true
+}
+
+type CPUResource struct {
+	Count int // Number of CPUs represented by this resource
+
+	remaining int
+	mutex     sync.Mutex
+}
+
+func (c *CPUResource) Name() string { return "CPU" }
+func (c *CPUResource) Ask(i int) int {
+	if i == 0 {
+		return 0
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.remaining > 0 {
+		c.remaining--
+		return 1
+	}
+	return 0
+}
+func (c *CPUResource) Reset() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.remaining = c.Count
 }
 
 type ResourceNeed struct {
@@ -21,23 +79,23 @@ type ResourceNeed struct {
 }
 
 type ResourceMap interface {
-	RequestNeeds(*http.Request) ([]ResourceNeed, error)
+	RequestNeeds(*http.Request) ([]*ResourceNeed, error)
 }
 
 type SimWorker struct {
 	ResourceMap ResourceMap
 	Resources   []Resource
-	Clock       interface {
-		Tick() <-chan time.Time // Return a channel that ticks with the clock.
-		Done()                  // Done waiting on the clock for now
-	}
+	Clock       Clock
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
 	for task := range queue {
 		needs, err := w.ResourceMap.RequestNeeds(task.Request)
 		if err != nil {
-			task.Result <- Result{Err: err}
+			task.Result <- Result{
+				Err: err,
+				End: w.Clock.Now(),
+			}
 			continue
 		}
 
@@ -49,7 +107,13 @@ func (w *SimWorker) Run(queue <-chan Task) {
 				if res.Name() != need.Name {
 					continue
 				}
-				need.Value -= res.Ask(need.Value)
+				log.Printf("Asking %d of %#v at %s", need.Value, res, now)
+				got := res.Ask(need.Value)
+
+				if got > 0 {
+					need.Value -= got
+					break
+				}
 			}
 			if need.Value <= 0 {
 				needs = needs[1:]
@@ -74,10 +138,7 @@ type WorkerPool struct {
 	Timeout time.Duration
 	Workers []Worker
 
-	Clock interface {
-		Tick() <-chan time.Time // Return a channel that ticks with the clock.
-		Done()                  // Done waiting on the clock for now
-	}
+	Clock Clock
 }
 
 func (w *WorkerPool) Run(queue <-chan Task) {

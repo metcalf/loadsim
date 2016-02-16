@@ -18,18 +18,19 @@ type Result struct {
 	Err        error
 }
 
-func Simulate(agents []Agent, worker HTTPWorker) map[Agent][]Result {
+type AgentResult struct {
+	Agent
+	Result
+}
+
+func Simulate(agents []Agent, worker Worker, clock Clock) <-chan AgentResult {
 	workerDone := make(chan struct{})
 	agentStop := make(chan struct{})
 	queue := make(chan Task)
 
 	var wg sync.WaitGroup
-	type agentResult struct {
-		Agent  Agent
-		Result Result
-	}
-	results := make(chan agentResult)
-	allResults := make(map[Agent][]Result, len(agents))
+
+	results := make(chan AgentResult)
 
 	go func() {
 		worker.Run(queue)
@@ -40,20 +41,36 @@ func Simulate(agents []Agent, worker HTTPWorker) map[Agent][]Result {
 		go func(a Agent) {
 			wg.Add(1)
 			for res := range a.Run(queue, agentStop) {
-				results <- agentResult{a, res}
+				results <- AgentResult{a, res}
+				if res.Err != nil {
+					log.Printf("Ack! error %v", res.Err)
+					close(agentStop)
+				}
 			}
 			wg.Done()
 		}(agent)
 	}
 
 	go func() {
-		timeout := time.After(time.Second * 5)
-		select {
-		case <-agentStop:
+		ticker := clock.Tick()
+
+		start := <-ticker
+		end := start.Add(time.Second * 5)
+
+		for {
+			select {
+			case <-agentStop:
+				break
+			case now := <-ticker:
+				if now.Before(end) {
+					continue
+				}
+				log.Printf("time up")
+				close(agentStop)
+			}
 			break
-		case <-timeout:
-			close(agentStop)
 		}
+		clock.Done()
 
 		// Wait for all agents to stop
 		wg.Wait()
@@ -65,14 +82,5 @@ func Simulate(agents []Agent, worker HTTPWorker) map[Agent][]Result {
 		close(results)
 	}()
 
-	for ares := range results {
-		res := ares.Result
-		allResults[ares.Agent] = append(allResults[ares.Agent], res)
-		if res.Err != nil {
-			log.Printf("Ack! error %v", res.Err)
-			close(agentStop)
-		}
-	}
-
-	return allResults
+	return results
 }

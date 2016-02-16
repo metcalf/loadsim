@@ -5,19 +5,27 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/metcalf/loadsim"
 	"github.com/montanaflynn/stats"
 )
 
-func main() {
-	badreq, err := http.NewRequest("GET", "https://qa-api.stripe.com", nil)
+type ResourceMapper struct{}
+
+func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
+	return []*loadsim.ResourceNeed{
+		{"time", 5},
+		//{"CPU", 2},
+	}, nil
+}
+
+func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
+	/*badreq, err := http.NewRequest("GET", "https://qa-api.stripe.com", nil)
 	if err != nil {
 		log.Fatal(err)
-	}
+	}*/
 
-	getreq, err := http.NewRequest("GET", "https://api.stripe.com/v1/charges/ch_17eCuA2eZvKYlo2CKz71JW4V", nil)
+	getreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/ch_17eCuA2eZvKYlo2CKz71JW4V", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -26,33 +34,93 @@ func main() {
 	agents := []loadsim.Agent{
 		&loadsim.RepeatAgent{
 			BaseRequest: getreq,
-			Clock:       &loadsim.WallClock{},
+			Clock:       clocker(),
 		},
-		&loadsim.RepeatAgent{
+		/*&loadsim.RepeatAgent{
 			BaseRequest: badreq,
-			Clock:       &loadsim.WallClock{},
+			Clock:       clocker(),
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: badreq,
 			Interval:    time.Second * 2,
-			Clock:       &loadsim.WallClock{},
+			Clock:       clocker(),
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: badreq,
 			Interval:    time.Millisecond * 50,
-			Clock:       &loadsim.WallClock{},
-		},
+			Clock:       clocker(),
+		},*/
 	}
 
-	results := loadsim.Simulate(agents, loadsim.HTTPWorker{
-		Clock: &loadsim.WallClock{},
-	})
+	return agents
+}
 
-	allCodes := make(map[int]struct{})
-	for _, data := range results {
-		for _, datum := range data {
-			allCodes[datum.StatusCode] = struct{}{}
+func main() {
+	simRun()
+}
+
+func simRun() {
+	var sim loadsim.SimClock
+	resClock1 := sim.Clock()
+
+	agents := buildAgents(sim.Clock)
+
+	resources := []loadsim.Resource{
+		&loadsim.TimeResource{},
+		&loadsim.CPUResource{Count: 1},
+	}
+	worker := loadsim.SimWorker{
+		ResourceMap: &ResourceMapper{},
+		Resources:   resources,
+		Clock:       sim.Clock(),
+	}
+
+	resClock2 := sim.Clock()
+	stop := make(chan struct{})
+	go func() {
+		ticker1 := resClock1.Tick()
+		ticker2 := resClock2.Tick()
+		for {
+			select {
+			case <-stop:
+				resClock1.Done()
+				resClock2.Done()
+				return
+			case <-ticker1:
+			}
+
+			for _, res := range resources {
+				res.Reset()
+			}
+
+			<-ticker2
 		}
+	}()
+
+	results := loadsim.Simulate(agents, &worker, sim.Clock())
+	sim.Run(stop)
+
+	outputResults(results, agents)
+	close(stop)
+}
+
+func httpRun() {
+	agents := buildAgents(newWallClock)
+
+	results := loadsim.Simulate(agents, &loadsim.HTTPWorker{
+		Clock: &loadsim.WallClock{},
+	}, &loadsim.WallClock{})
+
+	outputResults(results, agents)
+}
+
+func outputResults(results <-chan loadsim.AgentResult, agents []loadsim.Agent) {
+	allResults := make(map[loadsim.Agent][]loadsim.Result, len(agents))
+	allCodes := make(map[int]struct{})
+	for ares := range results {
+		res := ares.Result
+		allResults[ares.Agent] = append(allResults[ares.Agent], res)
+		allCodes[res.StatusCode] = struct{}{}
 	}
 
 	codes := make([]int, 0, len(allCodes))
@@ -67,7 +135,7 @@ func main() {
 	os.Stdout.WriteString("\n")
 
 	for _, agent := range agents {
-		data := results[agent]
+		data := allResults[agent]
 
 		codeCounts := make(map[int]int, len(codes))
 		durations := make([]float64, len(data))
@@ -91,4 +159,8 @@ func main() {
 		}
 		os.Stdout.WriteString("\n")
 	}
+}
+
+func newWallClock() loadsim.Clock {
+	return &loadsim.WallClock{}
 }
