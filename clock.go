@@ -85,7 +85,6 @@ type SimClock struct {
 
 func (c *SimClock) Run(stop <-chan struct{}) {
 	var now time.Time
-	now.Add(time.Millisecond) // Don't start at a zero time
 	go func() {
 		for {
 			found := false

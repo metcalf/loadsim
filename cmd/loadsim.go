@@ -61,10 +61,10 @@ func main() {
 }
 
 func simRun() {
-	var workLock sync.RWMutex
-	working := &sync.Cond{L: workLock.RLocker()}
+	var working sync.RWMutex
 
 	var sim loadsim.SimClock
+	resClock1 := sim.Clock()
 
 	agents := buildAgents(sim.Clock)
 
@@ -76,27 +76,31 @@ func simRun() {
 		ResourceMap: &ResourceMapper{},
 		Resources:   resources,
 		Clock:       sim.Clock(),
-		Working:     working,
+		Working:     &working,
 	}
 
 	stop := make(chan struct{})
-	resClock1 := sim.Clock()
+
+	resClock2 := sim.Clock()
+	// WTF this has got to be some kind of concurrency joke
 	ticker1 := resClock1.Tick()
+	ticker2 := resClock2.Tick()
 	go func() {
 		for {
 			select {
 			case <-stop:
 				resClock1.Done()
+				resClock2.Done()
 				return
-			case now := <-ticker1:
-				workLock.Lock()
-				for _, res := range resources {
-					res.Reset()
-				}
-				worker.ResourceGeneration = now
-				working.Broadcast()
-				workLock.Unlock()
+			case <-ticker1:
 			}
+
+			working.Lock()
+			for _, res := range resources {
+				res.Reset()
+			}
+			working.Unlock()
+			<-ticker2
 		}
 	}()
 
