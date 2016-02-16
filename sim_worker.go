@@ -86,6 +86,7 @@ type SimWorker struct {
 	ResourceMap ResourceMap
 	Resources   []Resource
 	Clock       Clock
+	Working     *sync.RWMutex
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
@@ -100,6 +101,7 @@ func (w *SimWorker) Run(queue <-chan Task) {
 		}
 
 		for now := range w.Clock.Tick() {
+			w.Working.RLock()
 			need := needs[0]
 
 			// TODO: optimize this with a map
@@ -127,7 +129,9 @@ func (w *SimWorker) Run(queue <-chan Task) {
 				}
 				break
 			}
+			w.Working.RUnlock()
 		}
+		w.Working.RUnlock()
 		w.Clock.Done()
 	}
 }
