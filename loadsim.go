@@ -13,9 +13,9 @@ type Task struct {
 }
 
 type Result struct {
-	StatusCode int
-	Start, End time.Time
-	Err        error
+	StatusCode            int
+	Start, WorkStart, End time.Time
+	Err                   error
 }
 
 type AgentResult struct {

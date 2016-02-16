@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/metcalf/loadsim"
 	"github.com/montanaflynn/stats"
@@ -15,8 +14,8 @@ type ResourceMapper struct{}
 
 func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
 	return []*loadsim.ResourceNeed{
-		{"time", 5},
-		{"CPU", 2},
+		{"time", 9},
+		{"CPU", 1},
 	}, nil
 }
 
@@ -61,8 +60,6 @@ func main() {
 }
 
 func simRun() {
-	var working sync.RWMutex
-
 	var sim loadsim.SimClock
 	resClock1 := sim.Clock()
 
@@ -76,7 +73,6 @@ func simRun() {
 		ResourceMap: &ResourceMapper{},
 		Resources:   resources,
 		Clock:       sim.Clock(),
-		Working:     &working,
 	}
 
 	stop := make(chan struct{})
@@ -95,11 +91,9 @@ func simRun() {
 			case <-ticker1:
 			}
 
-			working.Lock()
 			for _, res := range resources {
 				res.Reset()
 			}
-			working.Unlock()
 			<-ticker2
 		}
 	}()

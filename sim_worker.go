@@ -1,7 +1,6 @@
 package loadsim
 
 import (
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -86,7 +85,6 @@ type SimWorker struct {
 	ResourceMap ResourceMap
 	Resources   []Resource
 	Clock       Clock
-	Working     *sync.RWMutex
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
@@ -94,14 +92,17 @@ func (w *SimWorker) Run(queue <-chan Task) {
 		needs, err := w.ResourceMap.RequestNeeds(task.Request)
 		if err != nil {
 			task.Result <- Result{
-				Err: err,
-				End: w.Clock.Now(),
+				Err:       err,
+				WorkStart: w.Clock.Now(),
+				End:       w.Clock.Now(),
 			}
 			continue
 		}
 
-		for now := range w.Clock.Tick() {
-			w.Working.RLock()
+		ticker := w.Clock.Tick()
+		start := w.Clock.Now()
+		for now := range ticker {
+			// TODO: Handle the case where the need starts at zero
 			need := needs[0]
 
 			// TODO: optimize this with a map
@@ -109,7 +110,7 @@ func (w *SimWorker) Run(queue <-chan Task) {
 				if res.Name() != need.Name {
 					continue
 				}
-				log.Printf("Asking %d of %#v at %s", need.Value, res, now)
+				//log.Printf("Asking %d of %#v at %s", need.Value, res, now)
 				got := res.Ask(need.Value)
 
 				if got > 0 {
@@ -125,13 +126,12 @@ func (w *SimWorker) Run(queue <-chan Task) {
 				task.Result <- Result{
 					// TODO: Eventually incorporate 503 and 429
 					StatusCode: 200,
+					WorkStart:  start,
 					End:        now,
 				}
 				break
 			}
-			w.Working.RUnlock()
 		}
-		w.Working.RUnlock()
 		w.Clock.Done()
 	}
 }
