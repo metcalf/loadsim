@@ -31,7 +31,7 @@ func TestSimClockSimple(t *testing.T) {
 		t.Fatalf("clock advanced from %s to %s, not 1ms", start, next)
 	}
 
-	// Add another clock to the mix and ensure they move together
+	// Add another clock to the mix and ensure they move together.
 	clock2 := sim.Clock()
 
 	// Before starting the other clock, we should we able to read
@@ -93,19 +93,9 @@ func TestSimClockSimple(t *testing.T) {
 
 	// Stop ticker1 and ensure this unblocks us
 	clock1.Done()
-	select {
-	case <-ticker2:
-	default:
+	_, err = timeoutRead(ticker2)
+	if err != nil {
 		t.Fatalf("should have unblocked ticker2")
-	}
-	// Ensure that the channel has closed
-	select {
-	case next := <-ticker1:
-		if !next.IsZero() {
-			t.Fatalf("ticker channel should have closed")
-		}
-	default:
-		t.Fatalf("ticker channel should have closed")
 	}
 }
 

@@ -100,8 +100,11 @@ func (w *SimWorker) Run(queue <-chan Task) {
 		}
 
 		ticker := w.Clock.Tick()
-		start := w.Clock.Now()
+		var start time.Time
 		for now := range ticker {
+			if start.IsZero() {
+				start = now.Add(-time.Millisecond)
+			}
 			// TODO: Handle the case where the need starts at zero
 			need := needs[0]
 

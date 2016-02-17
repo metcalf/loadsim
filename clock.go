@@ -14,6 +14,7 @@ type Clock interface {
 type workClock struct {
 	now     time.Time
 	ticker  chan time.Time
+	done    chan struct{}
 	started bool
 
 	startMutex sync.Mutex
@@ -33,11 +34,7 @@ func (c *workClock) Now() time.Time {
 func (c *workClock) Tick() <-chan time.Time {
 	c.startMutex.Lock()
 	defer c.startMutex.Unlock()
-	c.started = true
-
-	c.timeMutex.Lock()
-	defer c.timeMutex.Unlock()
-	c.ticker = make(chan time.Time)
+	c.done = make(chan struct{})
 
 	return c.ticker
 }
@@ -45,38 +42,25 @@ func (c *workClock) Tick() <-chan time.Time {
 // Done indicates that the consumer is no longer active
 // and the clock should not block on ticking.
 func (c *workClock) Done() {
-	c.startMutex.Lock()
-	defer c.startMutex.Unlock()
-	c.started = false
-
-	// Unblock reading from the ticker channel if necessary
-	select {
-	case <-c.ticker:
-	default:
-	}
-
-	c.timeMutex.Lock()
-	defer c.timeMutex.Unlock()
-	close(c.ticker)
+	close(c.done)
 }
 
 // Advance the clock to time t. Blocks until the new time
 // is read if the consumer is active. Returns a boolean indicating
 // whether the consumer is active.
 func (c *workClock) Advance(t time.Time) bool {
-	c.startMutex.Lock()
 	c.timeMutex.Lock()
-	defer c.timeMutex.Unlock()
-
-	wasStarted := c.started
-	c.startMutex.Unlock()
-
 	c.now = t
-	if wasStarted {
-		c.ticker <- t
-	}
+	c.timeMutex.Unlock()
 
-	return wasStarted
+	c.startMutex.Lock()
+	defer c.startMutex.Unlock()
+	select {
+	case c.ticker <- t:
+		return true
+	case <-c.done:
+		return false
+	}
 }
 
 type SimClock struct {
@@ -108,8 +92,11 @@ func (c *SimClock) Run(stop <-chan struct{}) {
 	}()
 }
 
+// NOTE: It is not safe to access clock after starting
 func (c *SimClock) Clock() Clock {
-	var clock workClock
+	clock := workClock{ticker: make(chan time.Time), done: make(chan struct{})}
+	clock.Done()
+
 	c.clocks = append(c.clocks, &clock)
 
 	return &clock

@@ -55,7 +55,7 @@ func Simulate(agents []Agent, worker Worker, clock Clock) <-chan AgentResult {
 		ticker := clock.Tick()
 
 		start := <-ticker
-		end := start.Add(time.Second * 5)
+		end := start.Add(time.Second * 100)
 
 		for {
 			select {
