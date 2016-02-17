@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/metcalf/loadsim"
 	"github.com/montanaflynn/stats"
@@ -32,10 +33,10 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 	getreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
 	agents := []loadsim.Agent{
-		&loadsim.RepeatAgent{
+		/*&loadsim.RepeatAgent{
 			BaseRequest: getreq,
 			Clock:       clocker(),
-		},
+		},*/
 		/*&loadsim.RepeatAgent{
 			BaseRequest: badreq,
 			Clock:       clocker(),
@@ -44,12 +45,12 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 			BaseRequest: badreq,
 			Interval:    time.Second * 2,
 			Clock:       clocker(),
-		},
-		&loadsim.IntervalAgent{
-			BaseRequest: badreq,
-			Interval:    time.Millisecond * 50,
-			Clock:       clocker(),
 		},*/
+		&loadsim.IntervalAgent{
+			BaseRequest: getreq,
+			Interval:    time.Millisecond * 20,
+			Clock:       clocker(),
+		},
 	}
 
 	return agents

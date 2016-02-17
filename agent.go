@@ -81,9 +81,9 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 			for now.Before(end) {
 				select {
 				case <-stop:
+					a.Clock.Done()
 					wg.Wait()
 					close(results)
-					a.Clock.Done()
 					return
 				case now = <-ticker:
 				}
