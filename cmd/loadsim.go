@@ -15,42 +15,24 @@ type ResourceMapper struct{}
 
 func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
 	return []*loadsim.ResourceNeed{
-		{"time", 9},
-		{"CPU", 1},
+		{"time", 5000},
+		{"CPU", 5000},
 	}, nil
 }
 
 func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
-	/*badreq, err := http.NewRequest("GET", "https://qa-api.stripe.com", nil)
-	if err != nil {
-		log.Fatal(err)
-	}*/
-
-	getreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/ch_17eCuA2eZvKYlo2CKz71JW4V", nil)
+	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/?limit=100", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	getreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
+	listreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
-	agents := []loadsim.Agent{
-		/*&loadsim.RepeatAgent{
-			BaseRequest: getreq,
+	agents := make([]loadsim.Agent, 60)
+	for i := range agents {
+		agents[i] = &loadsim.RepeatAgent{
+			BaseRequest: listreq,
 			Clock:       clocker(),
-		},*/
-		/*&loadsim.RepeatAgent{
-			BaseRequest: badreq,
-			Clock:       clocker(),
-		},
-		&loadsim.IntervalAgent{
-			BaseRequest: badreq,
-			Interval:    time.Second * 2,
-			Clock:       clocker(),
-		},*/
-		&loadsim.IntervalAgent{
-			BaseRequest: getreq,
-			Interval:    time.Millisecond * 20,
-			Clock:       clocker(),
-		},
+		}
 	}
 
 	return agents
@@ -66,14 +48,29 @@ func simRun() {
 
 	agents := buildAgents(sim.Clock)
 
-	resources := []loadsim.Resource{
-		&loadsim.TimeResource{},
-		&loadsim.CPUResource{Count: 1},
+	var workers []loadsim.Worker
+	var allResources []loadsim.Resource
+
+	for host := 0; host < 2; host++ {
+		cpu := &loadsim.CPUResource{Count: 4}
+		allResources = append(allResources, cpu)
+
+		for proc := 0; proc < 14; proc++ {
+			time := &loadsim.TimeResource{}
+			allResources = append(allResources, time)
+
+			workers = append(workers, &loadsim.SimWorker{
+				ResourceMap: &ResourceMapper{},
+				Resources:   []loadsim.Resource{cpu, time},
+				Clock:       sim.Clock(),
+			})
+		}
 	}
-	worker := loadsim.SimWorker{
-		ResourceMap: &ResourceMapper{},
-		Resources:   resources,
-		Clock:       sim.Clock(),
+	worker := loadsim.WorkerPool{
+		Backlog: 200,
+		Timeout: 60 * time.Second,
+		Workers: workers,
+		Clock:   sim.Clock(),
 	}
 
 	stop := make(chan struct{})
@@ -92,14 +89,14 @@ func simRun() {
 			case <-ticker1:
 			}
 
-			for _, res := range resources {
+			for _, res := range allResources {
 				res.Reset()
 			}
 			<-ticker2
 		}
 	}()
 
-	results := loadsim.Simulate(agents, &worker, sim.Clock(), 100*time.Second)
+	results := loadsim.Simulate(agents, &worker, sim.Clock(), 120*time.Second)
 	sim.Run(stop)
 
 	outputResults(results, agents)

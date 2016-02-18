@@ -1,6 +1,7 @@
 package loadsim_test
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -110,14 +111,28 @@ func TestRepeatSim(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	agent := &loadsim.RepeatAgent{
-		BaseRequest: req,
-		Clock:       sim.Clock(),
+	agents := []loadsim.Agent{
+		&loadsim.RepeatAgent{
+			BaseRequest: req,
+			Clock:       sim.Clock(),
+		},
 	}
 
-	count := runSim(t, sim, agent)
+	worker := makeSimWorker(&sim)
 
+	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
+	sim.Run(make(chan struct{}))
+
+	results := collectResults(resCh)[agents[0]]
+
+	if err := assertStatus(results, http.StatusOK); err != nil {
+		t.Error(err)
+	}
+	if err := assertWorkDurations(results, 10*time.Millisecond, time.Millisecond); err != nil {
+		t.Error(err)
+	}
+
+	count := len(results)
 	if count < 97 || count > 100 {
 		t.Errorf("expected 97-100 requests, got %d", count)
 	}
@@ -130,24 +145,91 @@ func TestIntervalSim(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	agent := &loadsim.IntervalAgent{
-		BaseRequest: req,
-		Clock:       sim.Clock(),
-		Interval:    51 * time.Millisecond,
+	agents := []loadsim.Agent{
+		&loadsim.IntervalAgent{
+			BaseRequest: req,
+			Clock:       sim.Clock(),
+			Interval:    51 * time.Millisecond,
+		},
 	}
 
-	count := runSim(t, sim, agent)
+	worker := makeSimWorker(&sim)
 
+	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
+	sim.Run(make(chan struct{}))
+
+	results := collectResults(resCh)[agents[0]]
+
+	if err := assertStatus(results, http.StatusOK); err != nil {
+		t.Error(err)
+	}
+	if err := assertWorkDurations(results, 10*time.Millisecond, time.Millisecond); err != nil {
+		t.Error(err)
+	}
+
+	count := len(results)
 	if count != 20 {
 		t.Errorf("expected 20 requests, got %d", count)
 	}
 }
 
-func runSim(t *testing.T, sim loadsim.SimClock, agent loadsim.Agent) int {
-	agents := []loadsim.Agent{agent}
+func TestPoolSim(t *testing.T) {
+	var sim loadsim.SimClock
 
-	worker := &loadsim.SimWorker{
+	req, err := http.NewRequest("GET", "", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	agents := []loadsim.Agent{
+		&loadsim.RepeatAgent{
+			BaseRequest: req,
+			Clock:       sim.Clock(),
+		},
+		&loadsim.RepeatAgent{
+			BaseRequest: req,
+			Clock:       sim.Clock(),
+		},
+		&loadsim.IntervalAgent{
+			BaseRequest: req,
+			Clock:       sim.Clock(),
+			Interval:    51 * time.Millisecond,
+		},
+	}
+
+	worker := &loadsim.WorkerPool{
+		Backlog: 10,
+		Timeout: 20 * time.Millisecond,
+		Workers: []loadsim.Worker{makeSimWorker(&sim), makeSimWorker(&sim)},
+		Clock:   sim.Clock(),
+	}
+
+	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
+	sim.Run(make(chan struct{}))
+
+	for agent, results := range collectResults(resCh) {
+		if err := assertStatus(results, http.StatusOK); err != nil {
+			t.Errorf("%s: %s", agent, err)
+		}
+		if err := assertWorkDurations(results, 10*time.Millisecond, time.Millisecond); err != nil {
+			t.Errorf("%s: %s", agent, err)
+		}
+
+		count := len(results)
+		switch agent.(type) {
+		case *loadsim.RepeatAgent:
+			if count < 80 || count > 90 {
+				t.Errorf("expected 80-90 requests, got %d", count)
+			}
+		case *loadsim.IntervalAgent:
+			if count != 20 {
+				t.Errorf("%s: expected 20 requests, got %d", agent, count)
+			}
+		}
+	}
+}
+
+func makeSimWorker(sim *loadsim.SimClock) *loadsim.SimWorker {
+	return &loadsim.SimWorker{
 		ResourceMap: DummyMapper([]loadsim.ResourceNeed{
 			{"a", 9},
 			{"b", 1},
@@ -158,33 +240,43 @@ func runSim(t *testing.T, sim loadsim.SimClock, agent loadsim.Agent) int {
 		},
 		Clock: sim.Clock(),
 	}
+}
 
-	results := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
-
-	stop := make(chan struct{})
-	sim.Run(stop)
-
-	var count int
-	var durations []time.Duration
-	for ares := range results {
-		res := ares.Result
-		if want, have := 200, res.StatusCode; want != have {
-			t.Errorf("%s: expected status %d, got %d", agent, want, have)
-		}
-		count++
-		durations = append(durations, res.End.Sub(res.Start))
+func collectResults(resCh <-chan loadsim.AgentResult) map[loadsim.Agent][]loadsim.Result {
+	all := make(map[loadsim.Agent][]loadsim.Result)
+	for ares := range resCh {
+		all[ares.Agent] = append(all[ares.Agent], ares.Result)
 	}
 
-	close(stop)
+	return all
+}
 
-	for i, d := range durations {
-		diff := 10*time.Millisecond - d
-		if diff > time.Millisecond {
-			t.Errorf("%s %d: expected 10ms, got %s (%v)", agent, i, d, durations)
+func assertStatus(results []loadsim.Result, expect int) error {
+	codes := make([]int, len(results))
+	for i, res := range results {
+		codes[i] = res.StatusCode
+	}
+	for i, code := range codes {
+		if code != expect {
+			return fmt.Errorf("%d: expected %d, got %d (%v)", i, expect, code, codes)
 		}
 	}
 
-	t.Logf("%s: %v", agent, durations)
+	return nil
+}
 
-	return count
+func assertWorkDurations(results []loadsim.Result, expect, delta time.Duration) error {
+	for i, res := range results {
+		dur := res.End.Sub(res.WorkStart)
+		diff := expect - dur
+		if diff < 0 {
+			diff = -diff
+		}
+
+		if diff > delta {
+			return fmt.Errorf("%d: expected %s, got %s", i, expect, dur)
+		}
+	}
+
+	return nil
 }

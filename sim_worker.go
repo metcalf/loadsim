@@ -141,7 +141,7 @@ func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time
 		if len(needs) == 0 {
 			task.Result <- Result{
 				// TODO: Eventually incorporate 503 and 429
-				StatusCode: 200,
+				StatusCode: http.StatusOK,
 				WorkStart:  start,
 				End:        now,
 			}
@@ -161,8 +161,13 @@ type WorkerPool struct {
 	Clock Clock
 }
 
+type poolTask struct {
+	Task  Task
+	Start time.Time
+}
+
 func (w *WorkerPool) Run(queue <-chan Task) {
-	backlog := make(chan Task, w.Backlog)
+	backlog := make(chan poolTask, w.Backlog)
 	workerQueue := make(chan Task)
 
 	var wg sync.WaitGroup
@@ -177,17 +182,42 @@ func (w *WorkerPool) Run(queue <-chan Task) {
 
 	go func() {
 		for task := range queue {
+			now := w.Clock.Now()
 			select {
-			case backlog <- task:
+			case backlog <- poolTask{task, now}:
 			default:
-				// Drop the task on the floor if the backlog is full
+				task.Result <- Result{
+					StatusCode: http.StatusServiceUnavailable,
+					WorkStart:  now,
+					End:        now,
+				}
 			}
 		}
 		close(backlog)
 	}()
 
 	for next := range backlog {
-		workerQueue <- next
+		ticker := w.Clock.Tick()
+		now := w.Clock.Now()
+		deadline := next.Start.Add(w.Timeout)
+		done := false
+
+		for !done {
+			select {
+			case workerQueue <- next.Task:
+				done = true
+			case now = <-ticker:
+				if now.After(deadline) {
+					next.Task.Result <- Result{
+						StatusCode: http.StatusGatewayTimeout,
+						WorkStart:  now,
+						End:        now,
+					}
+					done = true
+				}
+			}
+		}
+		w.Clock.Done()
 	}
 	close(workerQueue)
 	wg.Wait()
