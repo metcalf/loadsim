@@ -62,6 +62,7 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 	go func() {
 		for {
 			start := a.Clock.Now()
+
 			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 			queue <- task
 
@@ -77,6 +78,7 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 
 			end := start.Add(a.Interval)
 			now := start
+
 			ticker := a.Clock.Tick()
 			for now.Before(end) {
 				select {

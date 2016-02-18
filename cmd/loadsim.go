@@ -99,7 +99,7 @@ func simRun() {
 		}
 	}()
 
-	results := loadsim.Simulate(agents, &worker, sim.Clock())
+	results := loadsim.Simulate(agents, &worker, sim.Clock(), 100*time.Second)
 	sim.Run(stop)
 
 	outputResults(results, agents)
@@ -111,7 +111,7 @@ func httpRun() {
 
 	results := loadsim.Simulate(agents, &loadsim.HTTPWorker{
 		Clock: &loadsim.WallClock{},
-	}, &loadsim.WallClock{})
+	}, &loadsim.WallClock{}, 100*time.Second)
 
 	outputResults(results, agents)
 }

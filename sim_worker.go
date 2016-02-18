@@ -88,55 +88,68 @@ type SimWorker struct {
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
-	for task := range queue {
-		needs, err := w.ResourceMap.RequestNeeds(task.Request)
-		if err != nil {
-			task.Result <- Result{
-				Err:       err,
-				WorkStart: w.Clock.Now(),
-				End:       w.Clock.Now(),
+	ticker := w.Clock.Tick()
+
+	now := w.Clock.Now()
+	for {
+		select {
+		case task := <-queue:
+			// Zero value indicates a closed channel
+			if task.Request == nil {
+				w.Clock.Done()
+				return
 			}
-			continue
+			now = w.do(ticker, task, now)
+		case now = <-ticker:
 		}
+	}
+}
 
-		ticker := w.Clock.Tick()
-		var start time.Time
-		for now := range ticker {
-			if start.IsZero() {
-				start = now.Add(-time.Millisecond)
+func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time.Time {
+	needs, err := w.ResourceMap.RequestNeeds(task.Request)
+	if err != nil {
+		task.Result <- Result{
+			Err:       err,
+			WorkStart: start,
+			End:       start,
+		}
+		return start
+	}
+
+	var now time.Time
+	for now = range ticker {
+		// TODO: Handle the case where the need starts at zero
+		need := needs[0]
+
+		// TODO: optimize this with a map
+		for _, res := range w.Resources {
+			if res.Name() != need.Name {
+				continue
 			}
-			// TODO: Handle the case where the need starts at zero
-			need := needs[0]
+			//log.Printf("Asking %d of %#v at %s", need.Value, res, now)
+			got := res.Ask(need.Value)
 
-			// TODO: optimize this with a map
-			for _, res := range w.Resources {
-				if res.Name() != need.Name {
-					continue
-				}
-				//log.Printf("Asking %d of %#v at %s", need.Value, res, now)
-				got := res.Ask(need.Value)
-
-				if got > 0 {
-					need.Value -= got
-					break
-				}
-			}
-			if need.Value <= 0 {
-				needs = needs[1:]
-			}
-
-			if len(needs) == 0 {
-				task.Result <- Result{
-					// TODO: Eventually incorporate 503 and 429
-					StatusCode: 200,
-					WorkStart:  start,
-					End:        now,
-				}
+			if got > 0 {
+				need.Value -= got
 				break
 			}
 		}
-		w.Clock.Done()
+		if need.Value <= 0 {
+			needs = needs[1:]
+		}
+
+		if len(needs) == 0 {
+			task.Result <- Result{
+				// TODO: Eventually incorporate 503 and 429
+				StatusCode: 200,
+				WorkStart:  start,
+				End:        now,
+			}
+			break
+		}
 	}
+
+	return now
 }
 
 type WorkerPool struct {

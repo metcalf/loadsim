@@ -23,7 +23,7 @@ type AgentResult struct {
 	Result
 }
 
-func Simulate(agents []Agent, worker Worker, clock Clock) <-chan AgentResult {
+func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration) <-chan AgentResult {
 	workerDone := make(chan struct{})
 	agentStop := make(chan struct{})
 	queue := make(chan Task)
@@ -55,7 +55,7 @@ func Simulate(agents []Agent, worker Worker, clock Clock) <-chan AgentResult {
 		ticker := clock.Tick()
 
 		start := <-ticker
-		end := start.Add(time.Second * 100)
+		end := start.Add(duration)
 
 		for {
 			select {

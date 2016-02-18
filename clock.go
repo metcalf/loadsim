@@ -120,5 +120,6 @@ func (c *WallClock) Tick() <-chan time.Time {
 func (c *WallClock) Done() {
 	if c.ticker != nil {
 		c.ticker.Stop()
+		c.ticker = nil
 	}
 }
