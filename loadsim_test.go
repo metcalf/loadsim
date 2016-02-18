@@ -28,8 +28,6 @@ func (m DummyMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, e
 	return needs, nil
 }
 
-// Simple functional test of an HTTP worker with a mix
-// of agents
 func TestHTTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -105,8 +103,6 @@ func TestHTTP(t *testing.T) {
 	}
 }
 
-// SimClock, agent, return count
-
 func TestRepeatSim(t *testing.T) {
 	var sim loadsim.SimClock
 
@@ -122,8 +118,8 @@ func TestRepeatSim(t *testing.T) {
 
 	count := runSim(t, sim, agent)
 
-	if count < 80 || count > 100 {
-		t.Errorf("expected 80-100 requests, got %d", count)
+	if count < 97 || count > 100 {
+		t.Errorf("expected 97-100 requests, got %d", count)
 	}
 }
 
@@ -176,7 +172,7 @@ func runSim(t *testing.T, sim loadsim.SimClock, agent loadsim.Agent) int {
 			t.Errorf("%s: expected status %d, got %d", agent, want, have)
 		}
 		count++
-		durations = append(durations, res.End.Sub(res.WorkStart))
+		durations = append(durations, res.End.Sub(res.Start))
 	}
 
 	close(stop)

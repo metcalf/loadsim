@@ -23,18 +23,37 @@ func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result
 	results := make(chan Result)
 
 	go func() {
+		ticker := a.Clock.Tick()
+		now := a.Clock.Now()
 		for {
+			start := now
 			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
-			queue <- task
-			start := a.Clock.Now()
 
-			res := <-task.Result
-			res.Start = start
-			results <- res
+			queued := false
+			for !queued {
+				select {
+				case queue <- task:
+					queued = true
+				case now = <-ticker:
+				}
+			}
+
+			done := false
+			for !done {
+				select {
+				case res := <-task.Result:
+					res.Start = start
+					// We assume this is never blocking on the clock
+					results <- res
+					done = true
+				case now = <-ticker:
+				}
+			}
 
 			select {
 			case <-stop:
 				close(results)
+				a.Clock.Done()
 				return
 			default:
 			}
