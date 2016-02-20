@@ -56,50 +56,44 @@ func TestHTTP(t *testing.T) {
 		&loadsim.RepeatAgent{
 			BaseRequest: req1,
 			Clock:       &loadsim.WallClock{},
+			ID:          "repeat",
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: req2,
 			Clock:       &loadsim.WallClock{},
 			Interval:    time.Millisecond * 51,
+			ID:          "interval",
 		},
 	}
 
-	expectations := []struct {
+	expectations := map[string]struct {
 		Code, Count int
 	}{
-		{1, 3},
-		{2, 6},
+		"repeat":   {1, 3},
+		"interval": {2, 6},
 	}
-	counts := make(map[int]int, len(agents))
-	durations := make(map[int][]time.Duration, len(agents))
+	counts := make(map[string]int, len(agents))
+	durations := make(map[string][]time.Duration, len(agents))
 
 	worker := &loadsim.HTTPWorker{
 		Clock: &loadsim.WallClock{},
 	}
 
 	results := loadsim.Simulate(agents, worker, &loadsim.WallClock{}, 290*time.Millisecond)
-	for ares := range results {
-		for i, expect := range expectations {
-			if ares.Agent != agents[i] {
-				continue
-			}
-
-			res := ares.Result
-			if want, have := expect.Code, res.StatusCode; want != have {
-				t.Errorf("%d: expected status %d, got %d", i, want, have)
-			}
-			counts[i]++
-			durations[i] = append(durations[i], res.End.Sub(res.Start))
-			break
+	for res := range results {
+		id := res.AgentID
+		if want, have := expectations[id].Code, res.StatusCode; want != have {
+			t.Errorf("%s: expected status %d, got %d", id, want, have)
 		}
+		counts[id]++
+		durations[id] = append(durations[id], res.End.Sub(res.Start))
 	}
 
-	for i, have := range counts {
-		want := expectations[i].Count
-		//diff := want - have
+	for id, have := range counts {
+		want := expectations[id].Count
 
 		if have != want {
-			t.Errorf("%d: expected %d requests, got %d (%v)", i, want, have, durations[i])
+			t.Errorf("%s: expected %d requests, got %d (%v)", id, want, have, durations[id])
 		}
 	}
 }
@@ -123,7 +117,7 @@ func TestRepeatSim(t *testing.T) {
 	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
 	sim.Run(make(chan struct{}))
 
-	results := collectResults(resCh)[agents[0]]
+	results := collectResults(resCh)[""]
 
 	if err := assertStatus(results, http.StatusOK); err != nil {
 		t.Error(err)
@@ -158,7 +152,7 @@ func TestIntervalSim(t *testing.T) {
 	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
 	sim.Run(make(chan struct{}))
 
-	results := collectResults(resCh)[agents[0]]
+	results := collectResults(resCh)[""]
 
 	if err := assertStatus(results, http.StatusOK); err != nil {
 		t.Error(err)
@@ -184,15 +178,18 @@ func TestPoolSim(t *testing.T) {
 		&loadsim.RepeatAgent{
 			BaseRequest: req,
 			Clock:       sim.Clock(),
+			ID:          "repeat1",
 		},
 		&loadsim.RepeatAgent{
 			BaseRequest: req,
 			Clock:       sim.Clock(),
+			ID:          "repeat2",
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: req,
 			Clock:       sim.Clock(),
 			Interval:    51 * time.Millisecond,
+			ID:          "interval",
 		},
 	}
 
@@ -206,23 +203,23 @@ func TestPoolSim(t *testing.T) {
 	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
 	sim.Run(make(chan struct{}))
 
-	for agent, results := range collectResults(resCh) {
+	for id, results := range collectResults(resCh) {
 		if err := assertStatus(results, http.StatusOK); err != nil {
-			t.Errorf("%s: %s", agent, err)
+			t.Errorf("%s: %s", id, err)
 		}
 		if err := assertWorkDurations(results, 10*time.Millisecond, time.Millisecond); err != nil {
-			t.Errorf("%s: %s", agent, err)
+			t.Errorf("%s: %s", id, err)
 		}
 
 		count := len(results)
-		switch agent.(type) {
-		case *loadsim.RepeatAgent:
+		switch id {
+		case "repeat1", "repeat2":
 			if count < 80 || count > 90 {
-				t.Errorf("expected 80-90 requests, got %d", count)
+				t.Errorf("%s: expected 80-90 requests, got %d", id, count)
 			}
-		case *loadsim.IntervalAgent:
+		case "interval":
 			if count != 20 {
-				t.Errorf("%s: expected 20 requests, got %d", agent, count)
+				t.Errorf("%s: expected 20 requests, got %d", id, count)
 			}
 		}
 	}
@@ -242,10 +239,10 @@ func makeSimWorker(sim *loadsim.SimClock) *loadsim.SimWorker {
 	}
 }
 
-func collectResults(resCh <-chan loadsim.AgentResult) map[loadsim.Agent][]loadsim.Result {
-	all := make(map[loadsim.Agent][]loadsim.Result)
-	for ares := range resCh {
-		all[ares.Agent] = append(all[ares.Agent], ares.Result)
+func collectResults(resCh <-chan loadsim.Result) map[string][]loadsim.Result {
+	all := make(map[string][]loadsim.Result)
+	for res := range resCh {
+		all[res.AgentID] = append(all[res.AgentID], res)
 	}
 
 	return all

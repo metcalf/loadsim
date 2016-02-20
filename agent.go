@@ -13,10 +13,18 @@ type Agent interface {
 	Run(chan<- Task, <-chan struct{}) <-chan Result
 }
 
+type DelayLimitAgent struct {
+	Agent Agent
+	Clock Clock
+	Delay time.Duration
+	Limit time.Duration
+}
+
 type RepeatAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
 	Clock       Clock
+	ID          string
 }
 
 func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
@@ -43,6 +51,7 @@ func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result
 				select {
 				case res := <-task.Result:
 					res.Start = start
+					res.AgentID = a.ID
 					// We assume this is never blocking on the clock
 					results <- res
 					done = true
@@ -72,6 +81,7 @@ type IntervalAgent struct {
 	Body        []byte
 	Clock       Clock
 	Interval    time.Duration
+	ID          string
 }
 
 func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
@@ -90,6 +100,7 @@ func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Resu
 
 				res := <-rc
 				res.Start = start
+				res.AgentID = a.ID
 				results <- res
 
 				wg.Done()

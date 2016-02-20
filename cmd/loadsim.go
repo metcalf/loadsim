@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/metcalf/loadsim"
@@ -14,25 +18,48 @@ import (
 type ResourceMapper struct{}
 
 func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
+	if req.Method == "GET" {
+		return []*loadsim.ResourceNeed{
+			{"time", 500},
+			{"CPU", 2500},
+		}, nil
+	}
+
 	return []*loadsim.ResourceNeed{
-		{"time", 5000},
-		{"CPU", 5000},
+		{"time", 1000},
+		{"CPU", 500},
 	}, nil
 }
 
 func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
+	var agents []loadsim.Agent
+
 	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/?limit=100", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	listreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
-	agents := make([]loadsim.Agent, 60)
-	for i := range agents {
-		agents[i] = &loadsim.RepeatAgent{
+	for i := 0; i < 5; i++ {
+		agents = append(agents, &loadsim.RepeatAgent{
 			BaseRequest: listreq,
 			Clock:       clocker(),
-		}
+			ID:          fmt.Sprintf("%s %s", listreq.Method, listreq.URL.String()),
+		})
+	}
+
+	createreq, err := http.NewRequest("POST", "https://qa-api.stripe.com/v1/charges", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	createreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
+
+	for i := 0; i < 5; i++ {
+		agents = append(agents, &loadsim.RepeatAgent{
+			BaseRequest: createreq,
+			Clock:       clocker(),
+			ID:          fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
+		})
 	}
 
 	return agents
@@ -96,68 +123,127 @@ func simRun() {
 		}
 	}()
 
-	results := loadsim.Simulate(agents, &worker, sim.Clock(), 120*time.Second)
+	resultCh := loadsim.Simulate(agents, &worker, sim.Clock(), 120*time.Second)
 	sim.Run(stop)
 
-	outputResults(results, agents)
+	results := collect(resultCh)
 	close(stop)
+
+	summarize(results, os.Stderr)
+	output(results, os.Stdout)
 }
 
 func httpRun() {
 	agents := buildAgents(newWallClock)
 
-	results := loadsim.Simulate(agents, &loadsim.HTTPWorker{
+	resultCh := loadsim.Simulate(agents, &loadsim.HTTPWorker{
 		Clock: &loadsim.WallClock{},
 	}, &loadsim.WallClock{}, 100*time.Second)
+	results := collect(resultCh)
 
-	outputResults(results, agents)
+	summarize(results, os.Stderr)
+	output(results, os.Stdout)
 }
 
-func outputResults(results <-chan loadsim.AgentResult, agents []loadsim.Agent) {
-	allResults := make(map[loadsim.Agent][]loadsim.Result, len(agents))
-	allCodes := make(map[int]struct{})
-	for ares := range results {
-		res := ares.Result
-		allResults[ares.Agent] = append(allResults[ares.Agent], res)
-		allCodes[res.StatusCode] = struct{}{}
+func collect(resultCh <-chan loadsim.Result) []loadsim.Result {
+	var results []loadsim.Result
+	for r := range resultCh {
+		results = append(results, r)
 	}
 
-	codes := make([]int, 0, len(allCodes))
-	for code := range allCodes {
+	return results
+}
+
+func output(results []loadsim.Result, out io.Writer) {
+	writer := csv.NewWriter(out)
+	writer.Comma = '\t'
+	writer.Write([]string{
+		"agent", "status_code",
+		"request_start", "work_start", "end",
+		"total_time", "work_time",
+	})
+
+	begin := results[0].Start
+	for _, res := range results {
+		if res.Start.Before(begin) {
+			begin = res.Start
+		}
+	}
+
+	dtos := func(d time.Duration) string { return strconv.FormatFloat(d.Seconds(), 'f', 6, 64) }
+
+	for _, res := range results {
+		writer.Write([]string{
+			res.AgentID,
+			strconv.Itoa(res.StatusCode),
+			dtos(res.Start.Sub(begin)), dtos(res.WorkStart.Sub(begin)), dtos(res.End.Sub(begin)),
+			dtos(res.End.Sub(res.Start)), dtos(res.End.Sub(res.WorkStart)),
+		})
+	}
+
+	writer.Flush()
+}
+
+func summarize(results []loadsim.Result, out io.Writer) {
+	keyed := make(map[string][]loadsim.Result)
+	codeSet := make(map[int]struct{})
+	for _, res := range results {
+		keyed[res.AgentID] = append(keyed[res.AgentID], res)
+		codeSet[res.StatusCode] = struct{}{}
+	}
+
+	codes := make([]int, 0, len(codeSet))
+	for code := range codeSet {
 		codes = append(codes, code)
 	}
 
-	os.Stdout.WriteString("Agent\tp50\tp90\tcount")
+	io.WriteString(out, "Agent\ttime(p50/p90/p95)\twork time(p50/p90/p95)\tcount")
 	for _, code := range codes {
-		fmt.Fprintf(os.Stdout, "\t%d", code)
+		fmt.Fprintf(out, "\t%d", code)
 	}
-	os.Stdout.WriteString("\n")
+	io.WriteString(out, "\n")
 
-	for _, agent := range agents {
-		data := allResults[agent]
-
+	for key, data := range keyed {
 		codeCounts := make(map[int]int, len(codes))
-		durations := make([]float64, len(data))
+		times := make([]float64, len(data))
+		workTimes := make([]float64, len(data))
+
 		for i, datum := range data {
-			durations[i] = datum.End.Sub(datum.Start).Seconds() * 1000
+			times[i] = datum.End.Sub(datum.Start).Seconds() * 1000
+			workTimes[i] = datum.End.Sub(datum.WorkStart).Seconds() * 1000
 			codeCounts[datum.StatusCode]++
 		}
-		med, err := stats.Median(durations)
+
+		timeStr, err := statString(times)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 
-		p90, err := stats.Percentile(durations, 90)
+		workTimeStr, err := statString(workTimes)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 
-		fmt.Fprintf(os.Stdout, "%s\t%f\t%f\t%d", agent, med, p90, len(data))
+		fmt.Fprintf(out, "%s\t%s\t%s\t%d", key, timeStr, workTimeStr, len(data))
 		for _, code := range codes {
-			fmt.Fprintf(os.Stdout, "\t%d", codeCounts[code])
+			fmt.Fprintf(out, "\t%d", codeCounts[code])
 		}
-		os.Stdout.WriteString("\n")
+		io.WriteString(out, "\n")
 	}
+}
+
+func statString(data []float64) (string, error) {
+	strs := make([]string, 3)
+
+	for i, pct := range []float64{50, 90, 95} {
+		stat, err := stats.Percentile(data, pct)
+		if err != nil {
+			return "", err
+		}
+		strs[i] = strconv.FormatFloat(stat, 'f', 2, 64)
+	}
+
+	return strings.Join(strs, "/"), nil
 }
 
 func newWallClock() loadsim.Clock {

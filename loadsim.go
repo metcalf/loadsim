@@ -16,21 +16,17 @@ type Result struct {
 	StatusCode            int
 	Start, WorkStart, End time.Time
 	Err                   error
+	AgentID               string
 }
 
-type AgentResult struct {
-	Agent
-	Result
-}
-
-func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration) <-chan AgentResult {
+func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration) <-chan Result {
 	workerDone := make(chan struct{})
 	agentStop := make(chan struct{})
 	queue := make(chan Task)
 
 	var wg sync.WaitGroup
 
-	results := make(chan AgentResult)
+	results := make(chan Result)
 
 	go func() {
 		worker.Run(queue)
@@ -41,7 +37,7 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 		go func(a Agent) {
 			wg.Add(1)
 			for res := range a.Run(queue, agentStop) {
-				results <- AgentResult{a, res}
+				results <- res
 				if res.Err != nil {
 					log.Printf("Ack! error %v", res.Err)
 					close(agentStop)
