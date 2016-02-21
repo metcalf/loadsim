@@ -40,11 +40,19 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 	}
 	listreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
-	for i := 0; i < 5; i++ {
-		agents = append(agents, &loadsim.RepeatAgent{
+	for i := 0; i < 50; i++ {
+		agent := &loadsim.RepeatAgent{
 			BaseRequest: listreq,
 			Clock:       clocker(),
 			ID:          fmt.Sprintf("%s %s", listreq.Method, listreq.URL.String()),
+		}
+		delay := 20*time.Second + time.Millisecond*time.Duration(i*300)
+
+		agents = append(agents, &loadsim.DelayLimitAgent{
+			Agent: agent,
+			Delay: delay,
+			Limit: 60 * time.Second,
+			Clock: clocker(),
 		})
 	}
 

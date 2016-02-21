@@ -10,7 +10,7 @@ import (
 )
 
 type Agent interface {
-	Run(chan<- Task, <-chan struct{}) <-chan Result
+	Run(chan<- Task, chan<- Result, <-chan struct{})
 }
 
 type DelayLimitAgent struct {
@@ -20,6 +20,39 @@ type DelayLimitAgent struct {
 	Limit time.Duration
 }
 
+func (a *DelayLimitAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
+	ticker := a.Clock.Tick()
+	now := a.Clock.Now()
+
+	start := now.Add(a.Delay)
+	for now.Before(start) {
+		select {
+		case <-stop:
+			a.Clock.Done()
+			return
+		case now = <-ticker:
+		}
+	}
+
+	end := now.Add(a.Limit)
+	subStop := make(chan struct{})
+
+	go func() {
+		for now.Before(end) {
+			select {
+			case <-stop:
+				close(subStop)
+				return
+			case now = <-ticker:
+			}
+		}
+		close(subStop)
+		a.Clock.Done()
+	}()
+
+	a.Agent.Run(queue, results, subStop)
+}
+
 type RepeatAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
@@ -27,49 +60,42 @@ type RepeatAgent struct {
 	ID          string
 }
 
-func (a *RepeatAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
-	results := make(chan Result)
+func (a *RepeatAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
+	ticker := a.Clock.Tick()
+	now := a.Clock.Now()
+	for {
+		start := now
+		task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 
-	go func() {
-		ticker := a.Clock.Tick()
-		now := a.Clock.Now()
-		for {
-			start := now
-			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
-
-			queued := false
-			for !queued {
-				select {
-				case queue <- task:
-					queued = true
-				case now = <-ticker:
-				}
-			}
-
-			done := false
-			for !done {
-				select {
-				case res := <-task.Result:
-					res.Start = start
-					res.AgentID = a.ID
-					// We assume this is never blocking on the clock
-					results <- res
-					done = true
-				case now = <-ticker:
-				}
-			}
-
+		queued := false
+		for !queued {
 			select {
-			case <-stop:
-				close(results)
-				a.Clock.Done()
-				return
-			default:
+			case queue <- task:
+				queued = true
+			case now = <-ticker:
 			}
 		}
-	}()
 
-	return results
+		done := false
+		for !done {
+			select {
+			case res := <-task.Result:
+				res.Start = start
+				res.AgentID = a.ID
+				// We assume this is never blocking on the clock
+				results <- res
+				done = true
+			case now = <-ticker:
+			}
+		}
+
+		select {
+		case <-stop:
+			a.Clock.Done()
+			return
+		default:
+		}
+	}
 }
 
 func (a *RepeatAgent) String() string {
@@ -84,47 +110,41 @@ type IntervalAgent struct {
 	ID          string
 }
 
-func (a *IntervalAgent) Run(queue chan<- Task, stop <-chan struct{}) <-chan Result {
-	results := make(chan Result)
+func (a *IntervalAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
 	var wg sync.WaitGroup
 
-	go func() {
-		for {
-			start := a.Clock.Now()
+	for {
+		start := a.Clock.Now()
 
-			task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
-			queue <- task
+		task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
+		queue <- task
 
-			go func(rc <-chan Result) {
-				wg.Add(1)
+		go func(rc <-chan Result) {
+			wg.Add(1)
 
-				res := <-rc
-				res.Start = start
-				res.AgentID = a.ID
-				results <- res
+			res := <-rc
+			res.Start = start
+			res.AgentID = a.ID
+			results <- res
 
-				wg.Done()
-			}(task.Result)
+			wg.Done()
+		}(task.Result)
 
-			end := start.Add(a.Interval)
-			now := start
+		end := start.Add(a.Interval)
+		now := start
 
-			ticker := a.Clock.Tick()
-			for now.Before(end) {
-				select {
-				case <-stop:
-					a.Clock.Done()
-					wg.Wait()
-					close(results)
-					return
-				case now = <-ticker:
-				}
+		ticker := a.Clock.Tick()
+		for now.Before(end) {
+			select {
+			case <-stop:
+				a.Clock.Done()
+				wg.Wait()
+				return
+			case now = <-ticker:
 			}
-			a.Clock.Done()
 		}
-	}()
-
-	return results
+		a.Clock.Done()
+	}
 }
 
 func (a *IntervalAgent) String() string {

@@ -23,10 +23,9 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 	workerDone := make(chan struct{})
 	agentStop := make(chan struct{})
 	queue := make(chan Task)
+	results := make(chan Result)
 
 	var wg sync.WaitGroup
-
-	results := make(chan Result)
 
 	go func() {
 		worker.Run(queue)
@@ -36,13 +35,7 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 	for _, agent := range agents {
 		go func(a Agent) {
 			wg.Add(1)
-			for res := range a.Run(queue, agentStop) {
-				results <- res
-				if res.Err != nil {
-					log.Printf("Ack! error %v", res.Err)
-					close(agentStop)
-				}
-			}
+			a.Run(queue, results, agentStop)
 			wg.Done()
 		}(agent)
 	}
