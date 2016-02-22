@@ -39,7 +39,7 @@ func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 	if envKeys := os.Getenv("STRIPE_KEYS"); envKeys != "" {
 		keys = strings.Split(envKeys, ",")
 	} else {
-		keys = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}
+		keys = []string{"list", "ch1", "ch2", "ch3", "ch4", "ch5", "ch6"}
 	}
 
 	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/?limit=100", nil)
@@ -76,7 +76,7 @@ func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 			BaseRequest: createreq,
 			Clock:       clk,
 			ID:          keys[i+1], //fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
-			Interval:    2500 * time.Millisecond,
+			Interval:    2000 * time.Millisecond,
 		})
 	}
 
@@ -95,7 +95,12 @@ func simRun() {
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
 
-	limiter, err := loadsim.NewWallClockLimiter(75*time.Second, 15*time.Second, clk)
+	workerCnt := 16
+	limiter, err := loadsim.NewWallClockLimiter(
+		time.Duration(5*workerCnt)*time.Second,
+		time.Duration(workerCnt)*time.Second,
+		clk,
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -104,7 +109,7 @@ func simRun() {
 		cpu := &loadsim.CPUResource{Count: 2}
 		allResources = append(allResources, cpu)
 
-		for proc := 0; proc < 14; proc++ {
+		for proc := 0; proc < workerCnt; proc++ {
 			time := &loadsim.TimeResource{}
 			allResources = append(allResources, time)
 
@@ -141,7 +146,7 @@ func simRun() {
 		}
 	}()
 
-	resultCh := loadsim.Simulate(agents, &worker, clk, 160*time.Second)
+	resultCh := loadsim.Simulate(agents, &worker, clk, 180*time.Second)
 	go clk.Run(stop)
 
 	results := collect(resultCh)
@@ -227,7 +232,7 @@ func summarize(results []loadsim.Result, out io.Writer) {
 	for _, code := range codes {
 		fmt.Fprintf(out, "\t%d", code)
 	}
-	io.WriteString(out, "\ttime(p50/p90/p95)\twork time(p50/p90/p95)\n")
+	io.WriteString(out, "\ttime(p50/p90/p99)\twork time(p50/p90/p99)\n")
 
 	for _, key := range keys {
 		data := keyed[key]
@@ -266,7 +271,7 @@ func summarize(results []loadsim.Result, out io.Writer) {
 func statString(data []float64) (string, error) {
 	strs := make([]string, 3)
 
-	for i, pct := range []float64{50, 90, 95} {
+	for i, pct := range []float64{50, 90, 99} {
 		stat, err := stats.Percentile(data, pct)
 		if err != nil {
 			return "", err
