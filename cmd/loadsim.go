@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,40 +35,48 @@ func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNee
 func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 	var agents []loadsim.Agent
 
+	var keys []string
+	if envKeys := os.Getenv("STRIPE_KEYS"); envKeys != "" {
+		keys = strings.Split(envKeys, ",")
+	} else {
+		keys = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}
+	}
+
 	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/?limit=100", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	listreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
+	listreq.SetBasicAuth(keys[0], "")
 
 	for i := 0; i < 60; i++ {
 		agent := &loadsim.RepeatAgent{
 			BaseRequest: listreq,
 			Clock:       clk,
-			ID:          fmt.Sprintf("%s %s", listreq.Method, listreq.URL.String()),
+			ID:          keys[0], //fmt.Sprintf("%s %s", listreq.Method, listreq.URL.String()),
+			Delay:       100 * time.Millisecond,
 		}
 		delay := 20*time.Second + time.Millisecond*time.Duration(i*300)
 
 		agents = append(agents, &loadsim.DelayLimitAgent{
 			Agent: agent,
 			Delay: delay,
-			Limit: 60 * time.Second,
+			Limit: 90 * time.Second,
 			Clock: clk,
 		})
 	}
 
-	createreq, err := http.NewRequest("POST", "https://qa-api.stripe.com/v1/charges", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	createreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
+	for i := 0; i < 6; i++ {
+		createreq, err := http.NewRequest("POST", "https://qa-api.stripe.com/v1/charges", nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		createreq.SetBasicAuth(keys[i+1], "")
 
-	for i := 0; i < 1; i++ {
 		agents = append(agents, &loadsim.IntervalAgent{
 			BaseRequest: createreq,
 			Clock:       clk,
-			ID:          fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
-			Interval:    300 * time.Millisecond,
+			ID:          keys[i+1], //fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
+			Interval:    2500 * time.Millisecond,
 		})
 	}
 
@@ -86,6 +95,11 @@ func simRun() {
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
 
+	limiter, err := loadsim.NewWallClockLimiter(75*time.Second, 15*time.Second, clk)
+	if err != nil {
+		panic(err)
+	}
+
 	for host := 0; host < 2; host++ {
 		cpu := &loadsim.CPUResource{Count: 2}
 		allResources = append(allResources, cpu)
@@ -98,12 +112,13 @@ func simRun() {
 				ResourceMap: &ResourceMapper{},
 				Resources:   []loadsim.Resource{cpu, time},
 				Clock:       clk,
+				Limiter:     limiter,
 			})
 		}
 	}
 	worker := loadsim.WorkerPool{
 		Backlog: 200,
-		Timeout: 30 * time.Second,
+		Timeout: 40 * time.Second,
 		Workers: workers,
 		Clock:   clk,
 	}
@@ -126,7 +141,7 @@ func simRun() {
 		}
 	}()
 
-	resultCh := loadsim.Simulate(agents, &worker, clk, 120*time.Second)
+	resultCh := loadsim.Simulate(agents, &worker, clk, 160*time.Second)
 	go clk.Run(stop)
 
 	results := collect(resultCh)
@@ -196,25 +211,36 @@ func summarize(results []loadsim.Result, out io.Writer) {
 		codeSet[res.StatusCode] = struct{}{}
 	}
 
+	var keys []string
+	for key := range keyed {
+		keys = append(keys, key)
+	}
+
+	sort.Sort(sort.StringSlice(keys))
+
 	codes := make([]int, 0, len(codeSet))
 	for code := range codeSet {
 		codes = append(codes, code)
 	}
 
-	io.WriteString(out, "Agent\ttime(p50/p90/p95)\twork time(p50/p90/p95)\tcount")
+	io.WriteString(out, "Agent\ttotal")
 	for _, code := range codes {
 		fmt.Fprintf(out, "\t%d", code)
 	}
-	io.WriteString(out, "\n")
+	io.WriteString(out, "\ttime(p50/p90/p95)\twork time(p50/p90/p95)\n")
 
-	for key, data := range keyed {
+	for _, key := range keys {
+		data := keyed[key]
+
 		codeCounts := make(map[int]int, len(codes))
 		times := make([]float64, len(data))
-		workTimes := make([]float64, len(data))
+		var workTimes []float64
 
 		for i, datum := range data {
 			times[i] = datum.End.Sub(datum.Start).Seconds() * 1000
-			workTimes[i] = datum.End.Sub(datum.WorkStart).Seconds() * 1000
+			if datum.StatusCode == 200 {
+				workTimes = append(workTimes, datum.End.Sub(datum.WorkStart).Seconds()*1000)
+			}
 			codeCounts[datum.StatusCode]++
 		}
 
@@ -228,10 +254,11 @@ func summarize(results []loadsim.Result, out io.Writer) {
 			panic(err)
 		}
 
-		fmt.Fprintf(out, "%s\t%s\t%s\t%d", key, timeStr, workTimeStr, len(data))
+		fmt.Fprintf(out, "%s\t%d", key, len(data))
 		for _, code := range codes {
 			fmt.Fprintf(out, "\t%d", codeCounts[code])
 		}
+		fmt.Fprintf(out, "\t%s\t%s", timeStr, workTimeStr)
 		io.WriteString(out, "\n")
 	}
 }

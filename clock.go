@@ -26,6 +26,7 @@ type SimClock struct {
 func NewSimClock() *SimClock {
 	var c SimClock
 	c.cond.L = c.mutex.RLocker()
+	c.now = time.Unix(1, 0)
 	return &c
 }
 

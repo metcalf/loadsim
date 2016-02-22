@@ -57,12 +57,19 @@ type RepeatAgent struct {
 	BaseRequest *http.Request
 	Body        []byte
 	Clock       Clock
+	Delay       time.Duration // Delay between requests
 	ID          string
 }
 
 func (a *RepeatAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
 	ticker, tickStop := a.Clock.Tick()
 	now := a.Clock.Now()
+
+	// Force at least a millisecond between requests
+	if a.Delay == 0 {
+		a.Delay = time.Millisecond
+	}
+
 	for {
 		start := now
 		task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
@@ -89,11 +96,14 @@ func (a *RepeatAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan 
 			}
 		}
 
-		select {
-		case <-stop:
-			close(tickStop)
-			return
-		default:
+		end := now.Add(a.Delay)
+		for now.Before(end) {
+			select {
+			case <-stop:
+				close(tickStop)
+				return
+			case now = <-ticker:
+			}
 		}
 	}
 }

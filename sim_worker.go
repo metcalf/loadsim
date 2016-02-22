@@ -85,6 +85,7 @@ type SimWorker struct {
 	ResourceMap ResourceMap
 	Resources   []Resource
 	Clock       Clock
+	Limiter     Limiter
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
@@ -109,9 +110,22 @@ func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time
 	needs, err := w.ResourceMap.RequestNeeds(task.Request)
 	if err != nil {
 		task.Result <- Result{
-			Err:       err,
-			WorkStart: start,
-			End:       start,
+			Err:        err,
+			WorkStart:  start,
+			End:        start,
+			StatusCode: 500,
+		}
+		return start
+	}
+
+	if !(w.Limiter == nil || w.Limiter.Allow(task)) {
+		// Tick once to simulate a little bit of time passing to avoid
+		// the clients getting into a tight loop.
+		now := <-ticker
+		task.Result <- Result{
+			WorkStart:  start,
+			End:        now,
+			StatusCode: 429,
 		}
 		return start
 	}
@@ -139,12 +153,15 @@ func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time
 		}
 
 		if len(needs) == 0 {
-			task.Result <- Result{
-				// TODO: Eventually incorporate 503 and 429
+			res := Result{
 				StatusCode: http.StatusOK,
 				WorkStart:  start,
 				End:        now,
 			}
+			if w.Limiter != nil {
+				w.Limiter.Report(task, res)
+			}
+			task.Result <- res
 			break
 		}
 	}
