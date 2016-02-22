@@ -20,7 +20,7 @@ type ResourceMapper struct{}
 func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
 	if req.Method == "GET" {
 		return []*loadsim.ResourceNeed{
-			{"time", 500},
+			{"time", 1000},
 			{"CPU", 2500},
 		}, nil
 	}
@@ -40,7 +40,7 @@ func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 	}
 	listreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 60; i++ {
 		agent := &loadsim.RepeatAgent{
 			BaseRequest: listreq,
 			Clock:       clk,
@@ -62,11 +62,12 @@ func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 	}
 	createreq.SetBasicAuth(os.Getenv("STRIPE_KEY"), "")
 
-	for i := 0; i < 5; i++ {
-		agents = append(agents, &loadsim.RepeatAgent{
+	for i := 0; i < 1; i++ {
+		agents = append(agents, &loadsim.IntervalAgent{
 			BaseRequest: createreq,
 			Clock:       clk,
 			ID:          fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
+			Interval:    300 * time.Millisecond,
 		})
 	}
 
@@ -86,7 +87,7 @@ func simRun() {
 	var allResources []loadsim.Resource
 
 	for host := 0; host < 2; host++ {
-		cpu := &loadsim.CPUResource{Count: 4}
+		cpu := &loadsim.CPUResource{Count: 2}
 		allResources = append(allResources, cpu)
 
 		for proc := 0; proc < 14; proc++ {
@@ -102,7 +103,7 @@ func simRun() {
 	}
 	worker := loadsim.WorkerPool{
 		Backlog: 200,
-		Timeout: 60 * time.Second,
+		Timeout: 30 * time.Second,
 		Workers: workers,
 		Clock:   clk,
 	}
@@ -126,7 +127,7 @@ func simRun() {
 	}()
 
 	resultCh := loadsim.Simulate(agents, &worker, clk, 120*time.Second)
-	clk.Run(stop)
+	go clk.Run(stop)
 
 	results := collect(resultCh)
 	close(stop)
