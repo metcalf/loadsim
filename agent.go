@@ -42,6 +42,7 @@ func (a *DelayLimitAgent) Run(queue chan<- Task, results chan<- Result, stop <-c
 			select {
 			case <-stop:
 				close(subStop)
+				close(tickStop)
 				return
 			case now = <-ticker:
 			}
@@ -129,9 +130,8 @@ func (a *IntervalAgent) Run(queue chan<- Task, results chan<- Result, stop <-cha
 		task := Task{copyRequest(a.BaseRequest, a.Body), make(chan Result, 1)}
 		queue <- task
 
+		wg.Add(1)
 		go func(rc <-chan Result) {
-			wg.Add(1)
-
 			res := <-rc
 			res.Start = start
 			res.AgentID = a.ID

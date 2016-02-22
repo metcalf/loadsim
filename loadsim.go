@@ -33,8 +33,8 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 	}()
 
 	for _, agent := range agents {
+		wg.Add(1)
 		go func(a Agent) {
-			wg.Add(1)
 			a.Run(queue, results, agentStop)
 			wg.Done()
 		}(agent)

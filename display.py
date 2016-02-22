@@ -29,5 +29,5 @@ plt.legend(
     loc='upper left',
 )
 plt.xlim(-1, max(data['end']))
-plt.ylim(0, 50)
+plt.ylim(0, 60)
 plt.show()
