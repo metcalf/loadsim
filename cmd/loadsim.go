@@ -31,7 +31,7 @@ func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNee
 	}, nil
 }
 
-func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
+func buildAgents(clk loadsim.Clock) []loadsim.Agent {
 	var agents []loadsim.Agent
 
 	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges/?limit=100", nil)
@@ -43,7 +43,7 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 	for i := 0; i < 50; i++ {
 		agent := &loadsim.RepeatAgent{
 			BaseRequest: listreq,
-			Clock:       clocker(),
+			Clock:       clk,
 			ID:          fmt.Sprintf("%s %s", listreq.Method, listreq.URL.String()),
 		}
 		delay := 20*time.Second + time.Millisecond*time.Duration(i*300)
@@ -52,7 +52,7 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 			Agent: agent,
 			Delay: delay,
 			Limit: 60 * time.Second,
-			Clock: clocker(),
+			Clock: clk,
 		})
 	}
 
@@ -65,7 +65,7 @@ func buildAgents(clocker func() loadsim.Clock) []loadsim.Agent {
 	for i := 0; i < 5; i++ {
 		agents = append(agents, &loadsim.RepeatAgent{
 			BaseRequest: createreq,
-			Clock:       clocker(),
+			Clock:       clk,
 			ID:          fmt.Sprintf("%s %s", createreq.Method, createreq.URL.String()),
 		})
 	}
@@ -78,10 +78,9 @@ func main() {
 }
 
 func simRun() {
-	var sim loadsim.SimClock
-	resClock1 := sim.Clock()
+	clk := loadsim.NewSimClock()
 
-	agents := buildAgents(sim.Clock)
+	agents := buildAgents(clk)
 
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
@@ -97,7 +96,7 @@ func simRun() {
 			workers = append(workers, &loadsim.SimWorker{
 				ResourceMap: &ResourceMapper{},
 				Resources:   []loadsim.Resource{cpu, time},
-				Clock:       sim.Clock(),
+				Clock:       clk,
 			})
 		}
 	}
@@ -105,34 +104,29 @@ func simRun() {
 		Backlog: 200,
 		Timeout: 60 * time.Second,
 		Workers: workers,
-		Clock:   sim.Clock(),
+		Clock:   clk,
 	}
 
 	stop := make(chan struct{})
 
-	resClock2 := sim.Clock()
-	// WTF this has got to be some kind of concurrency joke
-	ticker1 := resClock1.Tick()
-	ticker2 := resClock2.Tick()
+	ticker, tickStop := clk.Tick()
 	go func() {
 		for {
 			select {
 			case <-stop:
-				resClock1.Done()
-				resClock2.Done()
+				close(tickStop)
 				return
-			case <-ticker1:
+			case <-ticker:
 			}
 
 			for _, res := range allResources {
 				res.Reset()
 			}
-			<-ticker2
 		}
 	}()
 
-	resultCh := loadsim.Simulate(agents, &worker, sim.Clock(), 120*time.Second)
-	sim.Run(stop)
+	resultCh := loadsim.Simulate(agents, &worker, clk, 120*time.Second)
+	clk.Run(stop)
 
 	results := collect(resultCh)
 	close(stop)
@@ -142,7 +136,8 @@ func simRun() {
 }
 
 func httpRun() {
-	agents := buildAgents(newWallClock)
+	var clk loadsim.WallClock
+	agents := buildAgents(&clk)
 
 	resultCh := loadsim.Simulate(agents, &loadsim.HTTPWorker{
 		Clock: &loadsim.WallClock{},

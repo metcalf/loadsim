@@ -30,6 +30,7 @@ func (m DummyMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, e
 }
 
 func TestHTTP(t *testing.T) {
+	var clk loadsim.WallClock
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		v := r.FormValue("a")
@@ -55,12 +56,12 @@ func TestHTTP(t *testing.T) {
 	agents := []loadsim.Agent{
 		&loadsim.RepeatAgent{
 			BaseRequest: req1,
-			Clock:       &loadsim.WallClock{},
+			Clock:       &clk,
 			ID:          "repeat",
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: req2,
-			Clock:       &loadsim.WallClock{},
+			Clock:       &clk,
 			Interval:    time.Millisecond * 51,
 			ID:          "interval",
 		},
@@ -76,10 +77,10 @@ func TestHTTP(t *testing.T) {
 	durations := make(map[string][]time.Duration, len(agents))
 
 	worker := &loadsim.HTTPWorker{
-		Clock: &loadsim.WallClock{},
+		Clock: &clk,
 	}
 
-	results := loadsim.Simulate(agents, worker, &loadsim.WallClock{}, 290*time.Millisecond)
+	results := loadsim.Simulate(agents, worker, &clk, 290*time.Millisecond)
 	for res := range results {
 		id := res.AgentID
 		if want, have := expectations[id].Code, res.StatusCode; want != have {
@@ -99,7 +100,8 @@ func TestHTTP(t *testing.T) {
 }
 
 func TestRepeatSim(t *testing.T) {
-	var sim loadsim.SimClock
+	clk := loadsim.NewSimClock()
+	clk.ID = "rep"
 
 	req, err := http.NewRequest("GET", "", nil)
 	if err != nil {
@@ -108,16 +110,18 @@ func TestRepeatSim(t *testing.T) {
 	agents := []loadsim.Agent{
 		&loadsim.RepeatAgent{
 			BaseRequest: req,
-			Clock:       sim.Clock(),
+			Clock:       clk,
 		},
 	}
 
-	worker := makeSimWorker(&sim)
+	worker := makeSimWorker(clk)
 
-	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
-	sim.Run(make(chan struct{}))
+	stop := make(chan struct{})
+	resCh := loadsim.Simulate(agents, worker, clk, time.Second)
+	go clk.Run(stop)
 
 	results := collectResults(resCh)[""]
+	close(stop)
 
 	if err := assertStatus(results, http.StatusOK); err != nil {
 		t.Error(err)
@@ -127,13 +131,14 @@ func TestRepeatSim(t *testing.T) {
 	}
 
 	count := len(results)
-	if count < 97 || count > 100 {
-		t.Errorf("expected 97-100 requests, got %d", count)
+	if count < 95 || count > 100 {
+		t.Errorf("expected 95-100 requests, got %d", count)
 	}
 }
 
 func TestIntervalSim(t *testing.T) {
-	var sim loadsim.SimClock
+	clk := loadsim.NewSimClock()
+	clk.ID = "int"
 
 	req, err := http.NewRequest("GET", "", nil)
 	if err != nil {
@@ -142,17 +147,19 @@ func TestIntervalSim(t *testing.T) {
 	agents := []loadsim.Agent{
 		&loadsim.IntervalAgent{
 			BaseRequest: req,
-			Clock:       sim.Clock(),
+			Clock:       clk,
 			Interval:    51 * time.Millisecond,
 		},
 	}
 
-	worker := makeSimWorker(&sim)
+	worker := makeSimWorker(clk)
 
-	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
-	sim.Run(make(chan struct{}))
+	stop := make(chan struct{})
+	resCh := loadsim.Simulate(agents, worker, clk, time.Second)
+	go clk.Run(stop)
 
 	results := collectResults(resCh)[""]
+	close(stop)
 
 	if err := assertStatus(results, http.StatusOK); err != nil {
 		t.Error(err)
@@ -168,7 +175,8 @@ func TestIntervalSim(t *testing.T) {
 }
 
 func TestPoolSim(t *testing.T) {
-	var sim loadsim.SimClock
+	clk := loadsim.NewSimClock()
+	clk.ID = "pool"
 
 	req, err := http.NewRequest("GET", "", nil)
 	if err != nil {
@@ -177,17 +185,17 @@ func TestPoolSim(t *testing.T) {
 	agents := []loadsim.Agent{
 		&loadsim.RepeatAgent{
 			BaseRequest: req,
-			Clock:       sim.Clock(),
+			Clock:       clk,
 			ID:          "repeat1",
 		},
 		&loadsim.RepeatAgent{
 			BaseRequest: req,
-			Clock:       sim.Clock(),
+			Clock:       clk,
 			ID:          "repeat2",
 		},
 		&loadsim.IntervalAgent{
 			BaseRequest: req,
-			Clock:       sim.Clock(),
+			Clock:       clk,
 			Interval:    51 * time.Millisecond,
 			ID:          "interval",
 		},
@@ -196,14 +204,18 @@ func TestPoolSim(t *testing.T) {
 	worker := &loadsim.WorkerPool{
 		Backlog: 10,
 		Timeout: 20 * time.Millisecond,
-		Workers: []loadsim.Worker{makeSimWorker(&sim), makeSimWorker(&sim)},
-		Clock:   sim.Clock(),
+		Workers: []loadsim.Worker{makeSimWorker(clk), makeSimWorker(clk)},
+		Clock:   clk,
 	}
 
-	resCh := loadsim.Simulate(agents, worker, sim.Clock(), time.Second)
-	sim.Run(make(chan struct{}))
+	stop := make(chan struct{})
+	resCh := loadsim.Simulate(agents, worker, clk, time.Second)
+	go clk.Run(stop)
 
-	for id, results := range collectResults(resCh) {
+	agentResults := collectResults(resCh)
+	close(stop)
+
+	for id, results := range agentResults {
 		if err := assertStatus(results, http.StatusOK); err != nil {
 			t.Errorf("%s: %s", id, err)
 		}
@@ -214,8 +226,8 @@ func TestPoolSim(t *testing.T) {
 		count := len(results)
 		switch id {
 		case "repeat1", "repeat2":
-			if count < 80 || count > 90 {
-				t.Errorf("%s: expected 80-90 requests, got %d", id, count)
+			if count < 80 || count > 95 {
+				t.Errorf("%s: expected 80-95 requests, got %d", id, count)
 			}
 		case "interval":
 			if count != 20 {
@@ -225,7 +237,7 @@ func TestPoolSim(t *testing.T) {
 	}
 }
 
-func makeSimWorker(sim *loadsim.SimClock) *loadsim.SimWorker {
+func makeSimWorker(clk loadsim.Clock) *loadsim.SimWorker {
 	return &loadsim.SimWorker{
 		ResourceMap: DummyMapper([]loadsim.ResourceNeed{
 			{"a", 9},
@@ -235,7 +247,7 @@ func makeSimWorker(sim *loadsim.SimClock) *loadsim.SimWorker {
 			DummyResource("a"),
 			DummyResource("b"),
 		},
-		Clock: sim.Clock(),
+		Clock: clk,
 	}
 }
 

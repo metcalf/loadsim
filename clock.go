@@ -2,124 +2,103 @@ package loadsim
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Clock interface {
 	Now() time.Time
-	Tick() <-chan time.Time // Return a channel that ticks with the clock.
-	Done()                  // Done waiting on the clock for now
+	Tick() (<-chan time.Time, chan<- struct{})
 }
 
-type workClock struct {
-	now     time.Time
-	ticker  chan time.Time
-	done    chan struct{}
-	started bool
+type SimClock struct {
+	now       time.Time
+	mutex     sync.RWMutex
+	cond      sync.Cond
+	wg        sync.WaitGroup
+	listeners int64
 
-	startMutex sync.Mutex
-	timeMutex  sync.Mutex
+	// Just for testing
+	lids int64
+	ID   string
 }
 
-func (c *workClock) Now() time.Time {
-	c.timeMutex.Lock()
-	defer c.timeMutex.Unlock()
+func NewSimClock() *SimClock {
+	var c SimClock
+	c.cond.L = c.mutex.RLocker()
+	return &c
+}
+
+func (c *SimClock) Run(stop <-chan struct{}) {
+	for {
+		//log.Printf("%s: lock", c.ID)
+		c.mutex.Lock()
+		cnt := int(atomic.LoadInt64(&c.listeners))
+		if cnt > 0 {
+			c.now = c.now.Add(time.Millisecond)
+			c.wg.Add(cnt)
+		}
+		//log.Printf("%s: broadcast", c.ID)
+		c.cond.Broadcast()
+		//log.Printf("%s: unlock (now:%s listeners: %d)", c.ID, c.now, cnt)
+		c.mutex.Unlock()
+		//log.Printf("%s: wait", c.ID)
+		c.wg.Wait()
+	}
+}
+
+func (c *SimClock) Now() time.Time {
+	c.cond.L.Lock()
+	defer c.cond.L.Unlock()
 
 	return c.now
 }
 
-// Tick indicates that the consumer is active and returns
-// a channel of time updates. Advancing the clock will
-// block on reading the next time update.
-func (c *workClock) Tick() <-chan time.Time {
-	c.startMutex.Lock()
-	defer c.startMutex.Unlock()
-	c.done = make(chan struct{})
+func (c *SimClock) Tick() (<-chan time.Time, chan<- struct{}) {
+	ticker := make(chan time.Time)
+	stop := make(chan struct{})
 
-	return c.ticker
-}
+	c.cond.L.Lock()
+	//lid := atomic.AddInt64(&c.lids, 1)
+	atomic.AddInt64(&c.listeners, 1)
+	//log.Printf("%s %d: starting", c.ID, lid)
 
-// Done indicates that the consumer is no longer active
-// and the clock should not block on ticking.
-func (c *workClock) Done() {
-	close(c.done)
-}
-
-// Advance the clock to time t. Blocks until the new time
-// is read if the consumer is active. Returns a boolean indicating
-// whether the consumer is active.
-func (c *workClock) Advance(t time.Time) bool {
-	c.timeMutex.Lock()
-	c.now = t
-	c.timeMutex.Unlock()
-
-	c.startMutex.Lock()
-	defer c.startMutex.Unlock()
-	select {
-	case c.ticker <- t:
-		return true
-	case <-c.done:
-		return false
-	}
-}
-
-type SimClock struct {
-	clocks []*workClock
-}
-
-func (c *SimClock) Run(stop <-chan struct{}) {
-	var now time.Time
 	go func() {
 		for {
-			found := false
-			for _, clock := range c.clocks {
-				//log.Printf("advancing clock %d to %s", i, now)
-				found = clock.Advance(now) || found
-				//log.Printf("advanced")
-			}
-
-			// Only advance if someone is listening
-			if found {
-				now = now.Add(time.Millisecond)
-			}
+			//log.Printf("%s %d: waiting", c.ID, lid)
+			c.cond.Wait()
 
 			select {
 			case <-stop:
+				//log.Printf("%s %d: stopping", c.ID, lid)
+				atomic.AddInt64(&c.listeners, -1)
+				c.wg.Done()
+				c.cond.L.Unlock()
 				return
-			default:
+			case ticker <- c.now:
 			}
+			//log.Printf("%s %d: ticked", c.ID, lid)
+			c.wg.Done()
 		}
 	}()
+
+	return ticker, stop
 }
 
-// NOTE: It is not safe to access clock after starting
-func (c *SimClock) Clock() Clock {
-	clock := workClock{ticker: make(chan time.Time), done: make(chan struct{})}
-	clock.Done()
-
-	c.clocks = append(c.clocks, &clock)
-
-	return &clock
-}
-
-type WallClock struct {
-	ticker *time.Ticker
-}
+type WallClock struct{}
 
 func (c *WallClock) Now() time.Time {
 	return time.Now()
 }
 
-func (c *WallClock) Tick() <-chan time.Time {
-	if c.ticker == nil {
-		c.ticker = time.NewTicker(time.Millisecond)
-	}
-	return c.ticker.C
-}
+func (c *WallClock) Tick() (<-chan time.Time, chan<- struct{}) {
+	ticker := time.NewTicker(time.Millisecond)
+	stop := make(chan struct{})
 
-func (c *WallClock) Done() {
-	if c.ticker != nil {
-		c.ticker.Stop()
-		c.ticker = nil
-	}
+	go func() {
+		<-stop
+		ticker.Stop()
+	}()
+
+	return ticker.C, stop
 }

@@ -41,9 +41,9 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 	}
 
 	go func() {
-		ticker := clock.Tick()
+		ticker, tickStop := clock.Tick()
 
-		start := <-ticker
+		start := clock.Now()
 		end := start.Add(duration)
 
 		for {
@@ -59,7 +59,7 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 			}
 			break
 		}
-		clock.Done()
+		close(tickStop)
 
 		// Wait for all agents to stop
 		wg.Wait()

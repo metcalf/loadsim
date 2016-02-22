@@ -88,7 +88,7 @@ type SimWorker struct {
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
-	ticker := w.Clock.Tick()
+	ticker, tickStop := w.Clock.Tick()
 
 	now := w.Clock.Now()
 	for {
@@ -96,7 +96,7 @@ func (w *SimWorker) Run(queue <-chan Task) {
 		case task := <-queue:
 			// Zero value indicates a closed channel
 			if task.Request == nil {
-				w.Clock.Done()
+				close(tickStop)
 				return
 			}
 			now = w.do(ticker, task, now)
@@ -197,7 +197,7 @@ func (w *WorkerPool) Run(queue <-chan Task) {
 	}()
 
 	for next := range backlog {
-		ticker := w.Clock.Tick()
+		ticker, tickStop := w.Clock.Tick()
 		now := w.Clock.Now()
 		deadline := next.Start.Add(w.Timeout)
 		done := false
@@ -217,7 +217,7 @@ func (w *WorkerPool) Run(queue <-chan Task) {
 				}
 			}
 		}
-		w.Clock.Done()
+		close(tickStop)
 	}
 	close(workerQueue)
 	wg.Wait()

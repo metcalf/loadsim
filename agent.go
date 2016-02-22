@@ -21,14 +21,14 @@ type DelayLimitAgent struct {
 }
 
 func (a *DelayLimitAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
-	ticker := a.Clock.Tick()
+	ticker, tickStop := a.Clock.Tick()
 	now := a.Clock.Now()
 
 	start := now.Add(a.Delay)
 	for now.Before(start) {
 		select {
 		case <-stop:
-			a.Clock.Done()
+			close(tickStop)
 			return
 		case now = <-ticker:
 		}
@@ -47,7 +47,7 @@ func (a *DelayLimitAgent) Run(queue chan<- Task, results chan<- Result, stop <-c
 			}
 		}
 		close(subStop)
-		a.Clock.Done()
+		close(tickStop)
 	}()
 
 	a.Agent.Run(queue, results, subStop)
@@ -61,7 +61,7 @@ type RepeatAgent struct {
 }
 
 func (a *RepeatAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan struct{}) {
-	ticker := a.Clock.Tick()
+	ticker, tickStop := a.Clock.Tick()
 	now := a.Clock.Now()
 	for {
 		start := now
@@ -91,7 +91,7 @@ func (a *RepeatAgent) Run(queue chan<- Task, results chan<- Result, stop <-chan 
 
 		select {
 		case <-stop:
-			a.Clock.Done()
+			close(tickStop)
 			return
 		default:
 		}
@@ -133,17 +133,17 @@ func (a *IntervalAgent) Run(queue chan<- Task, results chan<- Result, stop <-cha
 		end := start.Add(a.Interval)
 		now := start
 
-		ticker := a.Clock.Tick()
+		ticker, tickStop := a.Clock.Tick()
 		for now.Before(end) {
 			select {
 			case <-stop:
-				a.Clock.Done()
+				close(tickStop)
 				wg.Wait()
 				return
 			case now = <-ticker:
 			}
 		}
-		a.Clock.Done()
+		close(tickStop)
 	}
 }
 
