@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,28 +20,13 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
-type ResourceMapper struct{}
-
-func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
-	if req.Method == "GET" {
-		return []*loadsim.ResourceNeed{
-			{"time", 500},
-			{"CPU", 2000},
-		}, nil
-	}
-
-	return []*loadsim.ResourceNeed{
-		{"time", 1200},
-		{"CPU", 400},
-	}, nil
-}
-
 type WorkerConfig struct {
 	Duration                      time.Duration
 	WallClockRate, WallClockBurst time.Duration
 	Hosts, Workers, CPUs          int
 	Backlog                       int
 	Timeout                       time.Duration
+	ResourceMapper                loadsim.ResourceMapper
 }
 
 func chargeCreate(key string) (*http.Request, []byte) {
@@ -78,6 +64,7 @@ func buildAgent(clk loadsim.Clock, id string, req *http.Request, body []byte, in
 			Body:        body,
 			Clock:       clk,
 			ID:          id,
+			Delay:       100 * time.Millisecond,
 		}
 	}
 
@@ -91,6 +78,137 @@ func buildAgent(clk loadsim.Clock, id string, req *http.Request, body []byte, in
 }
 
 func main() {
+	workerCounts()
+}
+
+func workerCounts() {
+	start := time.Now()
+	cpus := 2
+	hosts := 2
+	duration := 180 * time.Second
+	fuckeryDelay := duration / 6
+	fuckeryDuration := duration - fuckeryDelay*2
+	cfg := WorkerConfig{
+		Duration: duration,
+		CPUs:     cpus,
+		Hosts:    hosts,
+		Backlog:  200,
+		Timeout:  40 * time.Second,
+	}
+	prefix := "data"
+
+	clk := loadsim.NewSimClock()
+
+	normalMapper := func(req *http.Request) []*loadsim.ResourceNeed {
+		if req.Method == "GET" {
+			total := 3000
+			wall := total / 5
+			return []*loadsim.ResourceNeed{
+				{"time", wall},
+				{"CPU", total - wall},
+			}
+		}
+
+		total := 1350
+		cpu := total / 3
+		return []*loadsim.ResourceNeed{
+			{"time", total - cpu},
+			{"CPU", cpu},
+		}
+	}
+
+	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges?limit=100", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	listreq.SetBasicAuth("list", "")
+
+	var listAgents []loadsim.Agent
+	for i := 0; i < (hosts * cpus * 15); i++ {
+		listAgents = append(listAgents, buildAgent(clk, "list", listreq, nil, 0))
+	}
+
+	kerfuckery := map[string]struct {
+		Agents         []loadsim.Agent
+		ResourceMapper loadsim.ResourceMapper
+	}{
+		"none": {nil, nil},
+
+		// 10% of charges see a 20 second delay in the response
+		"charge-net-delay": {
+			nil,
+			func(req *http.Request) []*loadsim.ResourceNeed {
+				needs := normalMapper(req)
+				if req.Method == "POST" && req.URL.Path == "/v1/charges" && rand.Float32() < 0.1 {
+					needs = append(needs, &loadsim.ResourceNeed{"time", 20000})
+				}
+				return needs
+			},
+		},
+
+		// 100% of charges see a 1.25 second delay in the response
+		"charge-scoring-delay": {
+			nil,
+			func(req *http.Request) []*loadsim.ResourceNeed {
+				needs := normalMapper(req)
+				if req.Method == "POST" && req.URL.Path == "/v1/charges" {
+					needs = append(needs, &loadsim.ResourceNeed{"time", 1250})
+				}
+				return needs
+			},
+		},
+
+		// A bunch of expensive list queries wreck havock
+		"list": {listAgents, nil},
+	}
+
+	for _, workerCnt := range []int{cpus + cpus/2, 2 * cpus, 4 * cpus, 8 * cpus} {
+		cfg.Workers = workerCnt
+		cfg.WallClockBurst = time.Duration(5*workerCnt) * time.Second
+		cfg.WallClockRate = time.Duration(workerCnt) * time.Second
+
+		for name, fuckery := range kerfuckery {
+			var agents []loadsim.Agent
+
+			for i := 0; i < hosts*cpus*3/2; i++ {
+				req, body := chargeCreate(strconv.Itoa(i))
+				agents = append(agents, buildAgent(clk, "charge", req, body, 3*time.Second))
+			}
+
+			for i, newAgent := range fuckery.Agents {
+				agents = append(agents, &loadsim.DelayLimitAgent{
+					Agent: newAgent,
+					Delay: fuckeryDelay + duration/1000*time.Duration(i),
+					Limit: duration - fuckeryDelay*2,
+					Clock: clk,
+				})
+			}
+			if fuckery.ResourceMapper != nil {
+				beginFuckery := clk.Now().Add(fuckeryDelay)
+				endFuckery := beginFuckery.Add(fuckeryDuration)
+				cfg.ResourceMapper = func(req *http.Request) []*loadsim.ResourceNeed {
+					now := clk.Now()
+					if now.After(beginFuckery) && now.Before(endFuckery) {
+						return fuckery.ResourceMapper(req)
+					}
+
+					return normalMapper(req)
+				}
+			} else {
+				cfg.ResourceMapper = normalMapper
+			}
+
+			results := simRun(cfg, agents, clk)
+
+			path := path.Join(prefix, fmt.Sprintf("%d_%dworkers_%s.tsv", start.Unix(), workerCnt, name))
+			if err := writeResults(results, path); err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+}
+
+func listOverload() {
 	var keys []string
 	if envKeys := os.Getenv("STRIPE_KEYS"); envKeys != "" {
 		keys = strings.Split(envKeys, ",")
@@ -109,6 +227,19 @@ func main() {
 		Timeout:        40 * time.Second,
 		WallClockBurst: time.Duration(5*workerCnt) * time.Second,
 		WallClockRate:  time.Duration(workerCnt) * time.Second,
+		ResourceMapper: func(req *http.Request) []*loadsim.ResourceNeed {
+			if req.Method == "GET" {
+				return []*loadsim.ResourceNeed{
+					{"time", 500},
+					{"CPU", 2000},
+				}
+			}
+
+			return []*loadsim.ResourceNeed{
+				{"time", 1200},
+				{"CPU", 400},
+			}
+		},
 	}
 	prefix := "data"
 
@@ -211,10 +342,10 @@ func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loads
 			allResources = append(allResources, time)
 
 			workers = append(workers, &loadsim.SimWorker{
-				ResourceMap: &ResourceMapper{},
-				Resources:   []loadsim.Resource{cpu, time},
-				Clock:       clk,
-				Limiter:     limiter,
+				ResourceMapper: cfg.ResourceMapper,
+				Resources:      []loadsim.Resource{cpu, time},
+				Clock:          clk,
+				Limiter:        limiter,
 			})
 		}
 	}

@@ -77,15 +77,13 @@ type ResourceNeed struct {
 	Value int
 }
 
-type ResourceMap interface {
-	RequestNeeds(*http.Request) ([]*ResourceNeed, error)
-}
+type ResourceMapper func(*http.Request) []*ResourceNeed
 
 type SimWorker struct {
-	ResourceMap ResourceMap
-	Resources   []Resource
-	Clock       Clock
-	Limiter     Limiter
+	ResourceMapper ResourceMapper
+	Resources      []Resource
+	Clock          Clock
+	Limiter        Limiter
 }
 
 func (w *SimWorker) Run(queue <-chan Task) {
@@ -107,16 +105,7 @@ func (w *SimWorker) Run(queue <-chan Task) {
 }
 
 func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time.Time {
-	needs, err := w.ResourceMap.RequestNeeds(task.Request)
-	if err != nil {
-		task.Result <- Result{
-			Err:        err,
-			WorkStart:  start,
-			End:        start,
-			StatusCode: 500,
-		}
-		return start
-	}
+	needs := w.ResourceMapper(task.Request)
 
 	if !(w.Limiter == nil || w.Limiter.Allow(task)) {
 		// Tick once to simulate a little bit of time passing to avoid

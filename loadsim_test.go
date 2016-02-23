@@ -19,14 +19,14 @@ func (r DummyResource) Reset()       {}
 
 type DummyMapper []loadsim.ResourceNeed
 
-func (m DummyMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNeed, error) {
+func (m DummyMapper) RequestNeeds(req *http.Request) []*loadsim.ResourceNeed {
 	needs := make([]*loadsim.ResourceNeed, len(m))
 	for i, need := range m {
 		needCopy := need
 		needs[i] = &needCopy
 	}
 
-	return needs, nil
+	return needs
 }
 
 func TestHTTP(t *testing.T) {
@@ -239,10 +239,10 @@ func TestPoolSim(t *testing.T) {
 
 func makeSimWorker(clk loadsim.Clock) *loadsim.SimWorker {
 	return &loadsim.SimWorker{
-		ResourceMap: DummyMapper([]loadsim.ResourceNeed{
+		ResourceMapper: DummyMapper([]loadsim.ResourceNeed{
 			{"a", 9},
 			{"b", 1},
-		}),
+		}).RequestNeeds,
 		Resources: []loadsim.Resource{
 			DummyResource("a"),
 			DummyResource("b"),

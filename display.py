@@ -3,7 +3,12 @@ import matplotlib.pyplot as plt
 from matplotlib import cm, colors
 import sys
 
-data = np.genfromtxt(sys.stdin, dtype=None, delimiter='\t', names=True)
+if len(sys.argv) == 1:
+    infile = sys.stdin
+else:
+    infile = open(sys.argv[1])
+
+data = np.genfromtxt(infile, dtype=None, delimiter='\t', names=True)
 
 agents = np.unique(data['agent'])
 

@@ -33,6 +33,7 @@ for (ts, run), group in groups.iteritems():
                 series['request_start'], series['total_time'],
                 c=([scalarMap.to_rgba(i)] * len(series)),
                 edgecolors='none',
+                s=5,
             )
 
             plots.append(plot)
@@ -49,4 +50,3 @@ for (ts, run), group in groups.iteritems():
     f.savefig("%s_%s.png" % (ts, run), bbox_inches='tight', dpi=300)
     # f.set_xlim(-1, 90)
     # plt.ylim(0, 60)
-    # plt.show()
