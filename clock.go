@@ -1,7 +1,7 @@
 package loadsim
 
 import (
-	"sync"
+	"math/rand"
 	"sync/atomic"
 	"time"
 )
@@ -11,83 +11,96 @@ type Clock interface {
 	Tick() (<-chan time.Time, chan<- struct{})
 }
 
-type SimClock struct {
-	now       time.Time
-	mutex     sync.RWMutex
-	cond      sync.Cond
-	wg        sync.WaitGroup
-	listeners int64
+type simTicker struct {
+	ticker chan<- time.Time
+	stop   <-chan struct{}
+}
 
-	// Just for testing
-	lids int64
-	ID   string
+type SimClock struct {
+	Hook func()
+
+	now int64
+
+	listeners []simTicker
+	queue     chan simTicker
 }
 
 func NewSimClock() *SimClock {
 	var c SimClock
-	c.cond.L = c.mutex.RLocker()
-	c.now = time.Unix(1, 0)
+
+	c.now = 1
+	c.queue = make(chan simTicker)
+
 	return &c
 }
 
 func (c *SimClock) Run(stop <-chan struct{}) {
 	for {
 		//log.Printf("%s: lock", c.ID)
-		c.mutex.Lock()
-		cnt := int(atomic.LoadInt64(&c.listeners))
-		if cnt > 0 {
-			c.now = c.now.Add(time.Millisecond)
-			c.wg.Add(cnt)
+		// TODO: Try atomic here with millis
+		var now time.Time
+		if len(c.listeners) > 0 {
+			millis := atomic.AddInt64(&c.now, 1)
+			now = time.Unix(millis/1000, (millis%1000)*1e6)
+
+			if c.Hook != nil {
+				c.Hook()
+			}
 		}
-		//log.Printf("%s: broadcast", c.ID)
-		c.cond.Broadcast()
-		//log.Printf("%s: unlock (now:%s listeners: %d)", c.ID, c.now, cnt)
-		c.mutex.Unlock()
-		//log.Printf("%s: wait", c.ID)
-		c.wg.Wait()
+
+		// Shuffle listeners so that we don't schedule the same way every time
+		for i := range c.listeners {
+			j := rand.Intn(i + 1)
+			c.listeners[i], c.listeners[j] = c.listeners[j], c.listeners[i]
+		}
+
+		// Call each listener in order
+		origStart := len(c.listeners) - 1
+		for i := range c.listeners {
+			idx := origStart - i
+			listener := c.listeners[idx]
+
+			// Loop until we write to the listener or stop, pulling from
+			// the new listener queue as we go.
+			var done bool
+			for !done {
+				select {
+				case listener.ticker <- now:
+					done = true
+				case <-listener.stop:
+					// Delete this index, since we're iterating backwards this
+					// won't change the index of any remaining elements
+					c.listeners = append(c.listeners[:idx], c.listeners[idx+1:]...)
+					done = true
+				case new := <-c.queue:
+					c.listeners = append(c.listeners, new)
+				}
+			}
+		}
 
 		select {
 		case <-stop:
 			return
+		case new := <-c.queue:
+			// Handle the case where c.listeners is empty so we never
+			// run the main loop
+			c.listeners = append(c.listeners, new)
 		default:
 		}
 	}
 }
 
 func (c *SimClock) Now() time.Time {
-	c.cond.L.Lock()
-	defer c.cond.L.Unlock()
+	millis := atomic.LoadInt64(&c.now)
 
-	return c.now
+	return time.Unix(millis/1000, (millis%1000)*1e6)
 }
 
 func (c *SimClock) Tick() (<-chan time.Time, chan<- struct{}) {
 	ticker := make(chan time.Time)
 	stop := make(chan struct{})
 
-	c.cond.L.Lock()
-	//lid := atomic.AddInt64(&c.lids, 1)
-	atomic.AddInt64(&c.listeners, 1)
-	//log.Printf("%s %d: starting", c.ID, lid)
-
-	go func() {
-		for {
-			//log.Printf("%s %d: waiting", c.ID, lid)
-			c.cond.Wait()
-
-			select {
-			case <-stop:
-				//log.Printf("%s %d: stopping", c.ID, lid)
-				atomic.AddInt64(&c.listeners, -1)
-				c.wg.Done()
-				c.cond.L.Unlock()
-				return
-			case ticker <- c.now:
-			}
-			//log.Printf("%s %d: ticked", c.ID, lid)
-			c.wg.Done()
-		}
-	}()
+	c.queue <- simTicker{ticker, stop}
 
 	return ticker, stop
 }

@@ -12,10 +12,10 @@ func TestSimClockSimple(t *testing.T) {
 	stop := make(chan struct{})
 	clk := loadsim.NewSimClock()
 
+	go clk.Run(stop)
+
 	// Test a simple clock advancing
 	ticker1, tickStop1 := clk.Tick()
-
-	go clk.Run(stop)
 
 	start, err := timeoutRead(ticker1)
 	if err != nil {
@@ -31,6 +31,7 @@ func TestSimClockSimple(t *testing.T) {
 	}
 
 	ticker2, tickStop2 := clk.Tick()
+	<-ticker1
 
 	// With the other clock started, we should read an equal number
 	// of ticks from both clocks but we can't be sure which we started

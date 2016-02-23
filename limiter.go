@@ -19,7 +19,7 @@ const maxEstimate = 60 * time.Second
 
 type wallClockLimiter struct {
 	limiter   throttled.RateLimiter
-	mutex     sync.Mutex
+	mutex     sync.RWMutex
 	estimates map[string]time.Duration
 }
 
@@ -66,9 +66,9 @@ func NewWallClockLimiter(burst, rate time.Duration, clock Clock) (Limiter, error
 func (l *wallClockLimiter) Allow(task Task) bool {
 	key := l.key(task)
 
-	l.mutex.Lock()
+	l.mutex.RLock()
 	est, ok := l.estimates[key]
-	l.mutex.Unlock()
+	l.mutex.RUnlock()
 
 	if !ok {
 		est = defaultEstimate

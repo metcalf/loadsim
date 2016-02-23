@@ -133,7 +133,7 @@ func workerCounts() {
 		Agents         []loadsim.Agent
 		ResourceMapper loadsim.ResourceMapper
 	}{
-		{"none", nil, nil},
+		//{"none", nil, nil},
 
 		// 10% of charges see a 20 second delay in the response
 		{
@@ -149,7 +149,7 @@ func workerCounts() {
 		},
 
 		// 100% of charges see a 1.25 second delay in the response
-		{
+		/*{
 			"charge-scoring-delay",
 			nil,
 			func(req *http.Request) []*loadsim.ResourceNeed {
@@ -159,10 +159,10 @@ func workerCounts() {
 				}
 				return needs
 			},
-		},
+		},*/
 
 		// A bunch of expensive list queries wreck havock
-		{"list", listAgents, nil},
+		//{"list", listAgents, nil},
 	}
 
 	for _, workerCnt := range []int{cpus + cpus/2, 2 * cpus, 4 * cpus, 8 * cpus} {
@@ -173,7 +173,7 @@ func workerCounts() {
 		for _, fuckery := range kerfuckery {
 			var agents []loadsim.Agent
 
-			for i := 0; i < hosts*cpus; i++ {
+			for i := 0; i < hosts*cpus*3/2; i++ {
 				req, body := chargeCreate(strconv.Itoa(i))
 				agents = append(agents, buildAgent(clk, "charge", req, body, 3*time.Second))
 			}
@@ -326,6 +326,7 @@ func writeResults(results []loadsim.Result, path string) error {
 func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loadsim.Result {
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
+	simClk := clk.(*loadsim.SimClock)
 
 	var limiter loadsim.Limiter
 	if cfg.WallClockRate > 0 {
@@ -361,24 +362,14 @@ func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loads
 
 	stop := make(chan struct{})
 
-	ticker, tickStop := clk.Tick()
-	go func() {
-		for {
-			select {
-			case <-stop:
-				close(tickStop)
-				return
-			case <-ticker:
-			}
-
-			for _, res := range allResources {
-				res.Reset()
-			}
+	simClk.Hook = func() {
+		for _, res := range allResources {
+			res.Reset()
 		}
-	}()
+	}
 
 	resultCh := loadsim.Simulate(agents, &worker, clk, cfg.Duration)
-	go clk.(*loadsim.SimClock).Run(stop)
+	go simClk.Run(stop)
 
 	results := collect(resultCh)
 	close(stop)
