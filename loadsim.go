@@ -1,7 +1,6 @@
 package loadsim
 
 import (
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -54,7 +53,6 @@ func Simulate(agents []Agent, worker Worker, clock Clock, duration time.Duration
 				if now.Before(end) {
 					continue
 				}
-				log.Printf("time up")
 				close(agentStop)
 			}
 			break

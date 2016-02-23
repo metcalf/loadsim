@@ -16,6 +16,7 @@ import (
 
 	"github.com/metcalf/loadsim"
 	"github.com/montanaflynn/stats"
+	"github.com/olekukonko/tablewriter"
 )
 
 type ResourceMapper struct{}
@@ -35,7 +36,11 @@ func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNee
 }
 
 type WorkerConfig struct {
-	Duration time.Duration
+	Duration                      time.Duration
+	WallClockRate, WallClockBurst time.Duration
+	Hosts, Workers, CPUs          int
+	Backlog                       int
+	Timeout                       time.Duration
 }
 
 func chargeCreate(key string) (*http.Request, []byte) {
@@ -94,8 +99,16 @@ func main() {
 	}
 
 	start := time.Now()
+	workerCnt := 15
 	cfg := WorkerConfig{
-		Duration: 60 * time.Second,
+		Duration:       60 * time.Second,
+		Workers:        workerCnt,
+		CPUs:           2,
+		Hosts:          2,
+		Backlog:        200,
+		Timeout:        40 * time.Second,
+		WallClockBurst: time.Duration(5*workerCnt) * time.Second,
+		WallClockRate:  time.Duration(workerCnt) * time.Second,
 	}
 	prefix := "data"
 
@@ -116,8 +129,8 @@ func main() {
 	}
 	listreq.SetBasicAuth(keys[0], "")
 
-	for _, listAgents := range []int{1} {
-		for _, createInterval := range []time.Duration{0} {
+	for _, listAgents := range []int{1, 10, 60} {
+		for _, createInterval := range []time.Duration{0, 3 * time.Second} {
 			var rep string
 			if createInterval == 0 {
 				rep = "repeat"
@@ -158,7 +171,7 @@ func main() {
 }
 
 func writeResults(results []loadsim.Result, path string) error {
-	os.Stderr.WriteString(path + "\n")
+	os.Stderr.WriteString("\n" + path + "\n")
 	summarize(results, os.Stderr)
 	os.Stderr.WriteString("\n")
 
@@ -180,21 +193,20 @@ func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loads
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
 
-	workerCnt := 15
-	limiter, err := loadsim.NewWallClockLimiter(
-		time.Duration(5*workerCnt)*time.Second,
-		time.Duration(workerCnt)*time.Second,
-		clk,
-	)
-	if err != nil {
-		panic(err)
+	var limiter loadsim.Limiter
+	if cfg.WallClockRate > 0 {
+		var err error
+		limiter, err = loadsim.NewWallClockLimiter(cfg.WallClockBurst, cfg.WallClockRate, clk)
+		if err != nil {
+			panic(err)
+		}
 	}
 
-	for host := 0; host < 2; host++ {
-		cpu := &loadsim.CPUResource{Count: 2}
+	for host := 0; host < cfg.Hosts; host++ {
+		cpu := &loadsim.CPUResource{Count: cfg.CPUs}
 		allResources = append(allResources, cpu)
 
-		for proc := 0; proc < workerCnt; proc++ {
+		for proc := 0; proc < cfg.Workers; proc++ {
 			time := &loadsim.TimeResource{}
 			allResources = append(allResources, time)
 
@@ -207,8 +219,8 @@ func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loads
 		}
 	}
 	worker := loadsim.WorkerPool{
-		Backlog: 200,
-		Timeout: 40 * time.Second,
+		Backlog: cfg.Backlog,
+		Timeout: cfg.Timeout,
 		Workers: workers,
 		Clock:   clk,
 	}
@@ -291,6 +303,8 @@ func output(results []loadsim.Result, out io.Writer) {
 }
 
 func summarize(results []loadsim.Result, out io.Writer) {
+	table := tablewriter.NewWriter(out)
+
 	keyed := make(map[string][]loadsim.Result)
 	codeSet := make(map[int]struct{})
 	for _, res := range results {
@@ -310,13 +324,15 @@ func summarize(results []loadsim.Result, out io.Writer) {
 	}
 	sort.Sort(sort.IntSlice(codes))
 
-	io.WriteString(out, "Agent\ttotal")
+	header := []string{"Agent", "total"}
 	for _, code := range codes {
-		fmt.Fprintf(out, "\t%d", code)
+		header = append(header, strconv.Itoa(code))
 	}
-	io.WriteString(out, "\ttime(p50/p90/p99)\twork time(p50/p90/p99)\n")
+	header = append(header, "time(p50/p90/p99)", "work time(p50/p90/p99)")
+	table.SetHeader(header)
 
 	for _, key := range keys {
+		var line []string
 		data := keyed[key]
 
 		codeCounts := make(map[int]int, len(codes))
@@ -346,13 +362,17 @@ func summarize(results []loadsim.Result, out io.Writer) {
 			workTimeStr = "-/-/-"
 		}
 
-		fmt.Fprintf(out, "%s\t%d", key, len(data))
+		line = append(line, key, strconv.Itoa(len(data)))
 		for _, code := range codes {
-			fmt.Fprintf(out, "\t%d", codeCounts[code])
+			line = append(line, strconv.Itoa(codeCounts[code]))
 		}
-		fmt.Fprintf(out, "\t%s\t%s", timeStr, workTimeStr)
-		io.WriteString(out, "\n")
+		line = append(line, timeStr, workTimeStr)
+
+		table.Append(line)
 	}
+
+	table.SetBorder(false)
+	table.Render()
 }
 
 func statString(data []float64) (string, error) {
