@@ -83,8 +83,8 @@ func main() {
 
 func workerCounts() {
 	start := time.Now()
-	cpus := 2
-	hosts := 2
+	cpus := 4
+	hosts := 4
 	duration := 180 * time.Second
 	fuckeryDelay := duration / 6
 	fuckeryDuration := duration - fuckeryDelay*2
@@ -92,7 +92,7 @@ func workerCounts() {
 		Duration: duration,
 		CPUs:     cpus,
 		Hosts:    hosts,
-		Backlog:  200,
+		Backlog:  hosts * 100,
 		Timeout:  40 * time.Second,
 	}
 	prefix := "data"
@@ -124,18 +124,20 @@ func workerCounts() {
 	listreq.SetBasicAuth("list", "")
 
 	var listAgents []loadsim.Agent
-	for i := 0; i < (hosts * cpus * 15); i++ {
+	for i := 0; i < (hosts * cpus * 2); i++ {
 		listAgents = append(listAgents, buildAgent(clk, "list", listreq, nil, 0))
 	}
 
-	kerfuckery := map[string]struct {
+	kerfuckery := []struct {
+		Name           string
 		Agents         []loadsim.Agent
 		ResourceMapper loadsim.ResourceMapper
 	}{
-		"none": {nil, nil},
+		{"none", nil, nil},
 
 		// 10% of charges see a 20 second delay in the response
-		"charge-net-delay": {
+		{
+			"charge-net-delay",
 			nil,
 			func(req *http.Request) []*loadsim.ResourceNeed {
 				needs := normalMapper(req)
@@ -147,7 +149,8 @@ func workerCounts() {
 		},
 
 		// 100% of charges see a 1.25 second delay in the response
-		"charge-scoring-delay": {
+		{
+			"charge-scoring-delay",
 			nil,
 			func(req *http.Request) []*loadsim.ResourceNeed {
 				needs := normalMapper(req)
@@ -159,18 +162,18 @@ func workerCounts() {
 		},
 
 		// A bunch of expensive list queries wreck havock
-		"list": {listAgents, nil},
+		{"list", listAgents, nil},
 	}
 
 	for _, workerCnt := range []int{cpus + cpus/2, 2 * cpus, 4 * cpus, 8 * cpus} {
 		cfg.Workers = workerCnt
-		cfg.WallClockBurst = time.Duration(5*workerCnt) * time.Second
-		cfg.WallClockRate = time.Duration(workerCnt) * time.Second
+		cfg.WallClockRate = time.Duration(workerCnt*hosts) * time.Second / 2
+		cfg.WallClockBurst = cfg.WallClockRate * 5
 
-		for name, fuckery := range kerfuckery {
+		for _, fuckery := range kerfuckery {
 			var agents []loadsim.Agent
 
-			for i := 0; i < hosts*cpus*3/2; i++ {
+			for i := 0; i < hosts*cpus; i++ {
 				req, body := chargeCreate(strconv.Itoa(i))
 				agents = append(agents, buildAgent(clk, "charge", req, body, 3*time.Second))
 			}
@@ -200,7 +203,7 @@ func workerCounts() {
 
 			results := simRun(cfg, agents, clk)
 
-			path := path.Join(prefix, fmt.Sprintf("%d_%dworkers_%s.tsv", start.Unix(), workerCnt, name))
+			path := path.Join(prefix, fmt.Sprintf("%d_%dworkers_%s.tsv", start.Unix(), workerCnt, fuckery.Name))
 			if err := writeResults(results, path); err != nil {
 				log.Fatal(err)
 			}
