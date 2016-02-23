@@ -34,19 +34,80 @@ func (r *ResourceMapper) RequestNeeds(req *http.Request) ([]*loadsim.ResourceNee
 	}, nil
 }
 
-type RunConfig struct {
-	ListAgents, CreateAgents int
-	Duration, CreateInterval time.Duration
+type WorkerConfig struct {
+	Duration time.Duration
 }
 
-func buildAgents(clk loadsim.Clock, cfg RunConfig) []loadsim.Agent {
-	var agents []loadsim.Agent
+func chargeCreate(key string) (*http.Request, []byte) {
+	var card string
+	if strings.HasPrefix(key, "sk_test") {
+		card = "4242424242424242"
+	} else {
+		card = "4024007134427763" // randomly generated
+	}
 
+	body := []byte(url.Values{
+		"capture":           {"false"},
+		"amount":            {"400"},
+		"currency":          {"usd"},
+		"source[number]":    {card},
+		"source[exp_year]":  {"2030"},
+		"source[exp_month]": {"01"},
+		"source[cvc]":       {"123"},
+		"source[object]":    {"card"},
+	}.Encode())
+
+	req, err := http.NewRequest("POST", "https://qa-api.stripe.com/v1/charges", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.SetBasicAuth(key, "")
+
+	return req, body
+}
+
+func buildAgent(clk loadsim.Clock, id string, req *http.Request, body []byte, interval time.Duration) loadsim.Agent {
+	if interval == 0 {
+		return &loadsim.RepeatAgent{
+			BaseRequest: req,
+			Body:        body,
+			Clock:       clk,
+			ID:          id,
+		}
+	}
+
+	return &loadsim.IntervalAgent{
+		BaseRequest: req,
+		Body:        body,
+		Clock:       clk,
+		ID:          id,
+		Interval:    interval,
+	}
+}
+
+func main() {
 	var keys []string
 	if envKeys := os.Getenv("STRIPE_KEYS"); envKeys != "" {
 		keys = strings.Split(envKeys, ",")
 	} else {
-		keys = []string{"list", "ch1", "ch2", "ch3", "ch4", "ch5", "ch6"}
+		keys = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"}
+	}
+
+	start := time.Now()
+	cfg := WorkerConfig{
+		Duration: 60 * time.Second,
+	}
+	prefix := "data"
+
+	simClock := loadsim.NewSimClock()
+
+	runners := []struct {
+		Name  string
+		Run   func(WorkerConfig, []loadsim.Agent, loadsim.Clock) []loadsim.Result
+		Clock loadsim.Clock
+	}{
+		{"sim", simRun, simClock},
+		//{"http", httpRun, &loadsim.WallClock{}},
 	}
 
 	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges?limit=100", nil)
@@ -55,99 +116,8 @@ func buildAgents(clk loadsim.Clock, cfg RunConfig) []loadsim.Agent {
 	}
 	listreq.SetBasicAuth(keys[0], "")
 
-	for i := 0; i < cfg.ListAgents; i++ {
-		id := fmt.Sprintf("%s %s", listreq.Method, listreq.URL.Path)
-		// id := keys[0]
-		agent := &loadsim.RepeatAgent{
-			BaseRequest: listreq,
-			Clock:       clk,
-			ID:          id,
-			Delay:       100 * time.Millisecond,
-		}
-		delay := 20*time.Second + time.Millisecond*time.Duration(i*300)
-
-		agents = append(agents, &loadsim.DelayLimitAgent{
-			Agent: agent,
-			Delay: delay,
-			Limit: 60 * time.Second,
-			Clock: clk,
-		})
-	}
-
-	for i := 0; i < cfg.CreateAgents; i++ {
-		key := keys[i+1]
-
-		var card string
-		if strings.HasPrefix(key, "sk_test") {
-			card = "4242424242424242"
-		} else {
-			card = "4024007134427763" // randomly generated
-		}
-
-		body := []byte(url.Values{
-			"capture":           {"false"},
-			"amount":            {"400"},
-			"currency":          {"usd"},
-			"source[number]":    {card},
-			"source[exp_year]":  {"2030"},
-			"source[exp_month]": {"01"},
-			"source[cvc]":       {"123"},
-			"source[object]":    {"card"},
-		}.Encode())
-
-		createreq, err := http.NewRequest("POST", "https://qa-api.stripe.com/v1/charges", nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-		createreq.SetBasicAuth(key, "")
-
-		id := fmt.Sprintf("%s %s", createreq.Method, createreq.URL.Path)
-		// id := key
-
-		var agent loadsim.Agent
-		if cfg.CreateInterval == 0 {
-			agent = &loadsim.RepeatAgent{
-				BaseRequest: createreq,
-				Body:        body,
-				Clock:       clk,
-				ID:          id,
-			}
-		} else {
-			agent = &loadsim.IntervalAgent{
-				BaseRequest: createreq,
-				Body:        body,
-				Clock:       clk,
-				ID:          id,
-				Interval:    cfg.CreateInterval,
-			}
-		}
-		agents = append(agents, agent)
-	}
-
-	return agents
-}
-
-func main() {
-	start := time.Now()
-	cfg := RunConfig{
-		Duration:     90 * time.Second,
-		CreateAgents: 6,
-	}
-	prefix := "loaddata"
-
-	runners := []struct {
-		Name string
-		Run  func(RunConfig) []loadsim.Result
-	}{
-		{"sim", simRun},
-		{"http", httpRun},
-	}
-
-	for _, listAgents := range []int{1, 10, 60} {
-		cfg.ListAgents = listAgents
-
-		for _, createInterval := range []time.Duration{0, 3 * time.Second} {
-			cfg.CreateInterval = createInterval
+	for _, listAgents := range []int{1} {
+		for _, createInterval := range []time.Duration{0} {
 			var rep string
 			if createInterval == 0 {
 				rep = "repeat"
@@ -156,33 +126,57 @@ func main() {
 			}
 
 			for _, runner := range runners {
-				results := runner.Run(cfg)
+				var agents []loadsim.Agent
 
-				label := fmt.Sprintf("%d_%s_%dlist@%s", start.Unix(), runner.Name, listAgents, rep)
-				os.Stderr.WriteString(label + "\n")
-				summarize(results, os.Stderr)
-				os.Stderr.WriteString("\n")
+				for i := 0; i < listAgents; i++ {
+					id := fmt.Sprintf("%s %s", listreq.Method, listreq.URL.Path)
+					delay := 20*time.Second + time.Millisecond*time.Duration(i*300)
 
-				file, err := os.Create(path.Join(prefix, label+".tsv"))
-				if err != nil {
-					log.Fatalf("%s: %v", label, err)
+					agents = append(agents, &loadsim.DelayLimitAgent{
+						Agent: buildAgent(runner.Clock, id, listreq, nil, 0),
+						Delay: delay,
+						Limit: 60 * time.Second,
+						Clock: runner.Clock,
+					})
 				}
 
-				output(results, file)
+				for i := 0; i < 6; i++ {
+					req, body := chargeCreate(keys[i+1])
+					id := fmt.Sprintf("%s %s", req.Method, req.URL.Path)
+					agents = append(agents, buildAgent(runner.Clock, id, req, body, createInterval))
+				}
 
-				if err := file.Close(); err != nil {
-					log.Fatalf("%s: %v", label, err)
+				results := runner.Run(cfg, agents, runner.Clock)
+
+				path := path.Join(prefix, fmt.Sprintf("%d_%s_%dlist@%s.tsv", start.Unix(), runner.Name, listAgents, rep))
+				if err := writeResults(results, path); err != nil {
+					log.Fatal(err)
 				}
 			}
 		}
 	}
 }
 
-func simRun(cfg RunConfig) []loadsim.Result {
-	clk := loadsim.NewSimClock()
+func writeResults(results []loadsim.Result, path string) error {
+	os.Stderr.WriteString(path + "\n")
+	summarize(results, os.Stderr)
+	os.Stderr.WriteString("\n")
 
-	agents := buildAgents(clk, cfg)
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("%s: %v", path, err)
+	}
 
+	output(results, file)
+
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("%s: %v", path, err)
+	}
+
+	return nil
+}
+
+func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loadsim.Result {
 	var workers []loadsim.Worker
 	var allResources []loadsim.Resource
 
@@ -238,7 +232,7 @@ func simRun(cfg RunConfig) []loadsim.Result {
 	}()
 
 	resultCh := loadsim.Simulate(agents, &worker, clk, cfg.Duration)
-	go clk.Run(stop)
+	go clk.(*loadsim.SimClock).Run(stop)
 
 	results := collect(resultCh)
 	close(stop)
@@ -246,13 +240,10 @@ func simRun(cfg RunConfig) []loadsim.Result {
 	return results
 }
 
-func httpRun(cfg RunConfig) []loadsim.Result {
-	var clk loadsim.WallClock
-	agents := buildAgents(&clk, cfg)
-
+func httpRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loadsim.Result {
 	resultCh := loadsim.Simulate(agents, &loadsim.HTTPWorker{
-		Clock: &clk,
-	}, &clk, cfg.Duration)
+		Clock: clk,
+	}, clk, cfg.Duration)
 	return collect(resultCh)
 }
 

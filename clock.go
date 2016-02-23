@@ -45,6 +45,12 @@ func (c *SimClock) Run(stop <-chan struct{}) {
 		c.mutex.Unlock()
 		//log.Printf("%s: wait", c.ID)
 		c.wg.Wait()
+
+		select {
+		case <-stop:
+			return
+		default:
+		}
 	}
 }
 
