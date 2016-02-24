@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +26,7 @@ type WorkerConfig struct {
 	Backlog                       int
 	Timeout                       time.Duration
 	ResourceMapper                loadsim.ResourceMapper
+	RequestOverhead               []loadsim.ResourceNeed
 }
 
 func chargeCreate(key string) (*http.Request, []byte) {
@@ -78,7 +78,9 @@ func buildAgent(clk loadsim.Clock, id string, req *http.Request, body []byte, in
 }
 
 func main() {
-	workerCounts()
+	//workerCounts()
+	//listOverload()
+	qaListOverload()
 }
 
 func workerCounts() {
@@ -99,11 +101,11 @@ func workerCounts() {
 
 	clk := loadsim.NewSimClock()
 
-	normalMapper := func(req *http.Request) []*loadsim.ResourceNeed {
+	normalMapper := func(req *http.Request) []loadsim.ResourceNeed {
 		if req.Method == "GET" {
 			total := 3000
 			wall := total / 5
-			return []*loadsim.ResourceNeed{
+			return []loadsim.ResourceNeed{
 				{"time", wall},
 				{"CPU", total - wall},
 			}
@@ -111,7 +113,7 @@ func workerCounts() {
 
 		total := 1350
 		cpu := total / 3
-		return []*loadsim.ResourceNeed{
+		return []loadsim.ResourceNeed{
 			{"time", total - cpu},
 			{"CPU", cpu},
 		}
@@ -136,23 +138,23 @@ func workerCounts() {
 		//{"none", nil, nil},
 
 		// 10% of charges see a 20 second delay in the response
-		{
+		/*{
 			"charge-net-delay",
 			nil,
-			func(req *http.Request) []*loadsim.ResourceNeed {
+			func(req *http.Request) []loadsim.ResourceNeed {
 				needs := normalMapper(req)
 				if req.Method == "POST" && req.URL.Path == "/v1/charges" && rand.Float32() < 0.1 {
 					needs = append(needs, &loadsim.ResourceNeed{"time", 20000})
 				}
 				return needs
 			},
-		},
+		},*/
 
 		// 100% of charges see a 1.25 second delay in the response
 		/*{
 			"charge-scoring-delay",
 			nil,
-			func(req *http.Request) []*loadsim.ResourceNeed {
+			func(req *http.Request) []loadsim.ResourceNeed {
 				needs := normalMapper(req)
 				if req.Method == "POST" && req.URL.Path == "/v1/charges" {
 					needs = append(needs, &loadsim.ResourceNeed{"time", 1250})
@@ -162,12 +164,12 @@ func workerCounts() {
 		},*/
 
 		// A bunch of expensive list queries wreck havock
-		//{"list", listAgents, nil},
+		{"list", listAgents, nil},
 	}
 
 	for _, workerCnt := range []int{cpus + cpus/2, 2 * cpus, 4 * cpus, 8 * cpus} {
 		cfg.Workers = workerCnt
-		cfg.WallClockRate = time.Duration(workerCnt*hosts) * time.Second / 2
+		cfg.WallClockRate = time.Duration(workerCnt*hosts) / 2 * time.Second
 		cfg.WallClockBurst = cfg.WallClockRate * 5
 
 		for _, fuckery := range kerfuckery {
@@ -189,7 +191,7 @@ func workerCounts() {
 			if fuckery.ResourceMapper != nil {
 				beginFuckery := clk.Now().Add(fuckeryDelay)
 				endFuckery := beginFuckery.Add(fuckeryDuration)
-				cfg.ResourceMapper = func(req *http.Request) []*loadsim.ResourceNeed {
+				cfg.ResourceMapper = func(req *http.Request) []loadsim.ResourceNeed {
 					now := clk.Now()
 					if now.After(beginFuckery) && now.Before(endFuckery) {
 						return fuckery.ResourceMapper(req)
@@ -203,7 +205,7 @@ func workerCounts() {
 
 			results := simRun(cfg, agents, clk)
 
-			path := path.Join(prefix, fmt.Sprintf("%d_%dworkers_%s.tsv", start.Unix(), workerCnt, fuckery.Name))
+			path := path.Join(prefix, fmt.Sprintf("%d_%dworkers_%s.tsv", start.Unix(), workerCnt*hosts, fuckery.Name))
 			if err := writeResults(results, path); err != nil {
 				log.Fatal(err)
 			}
@@ -230,15 +232,15 @@ func listOverload() {
 		Timeout:        40 * time.Second,
 		WallClockBurst: time.Duration(5*workerCnt) * time.Second,
 		WallClockRate:  time.Duration(workerCnt) * time.Second,
-		ResourceMapper: func(req *http.Request) []*loadsim.ResourceNeed {
+		ResourceMapper: func(req *http.Request) []loadsim.ResourceNeed {
 			if req.Method == "GET" {
-				return []*loadsim.ResourceNeed{
+				return []loadsim.ResourceNeed{
 					{"time", 500},
 					{"CPU", 2000},
 				}
 			}
 
-			return []*loadsim.ResourceNeed{
+			return []loadsim.ResourceNeed{
 				{"time", 1200},
 				{"CPU", 400},
 			}
@@ -304,6 +306,87 @@ func listOverload() {
 	}
 }
 
+func qaListOverload() {
+	start := time.Now()
+	workerCnt := 15
+	hosts := 2
+	cpus := 2
+	cfg := WorkerConfig{
+		Duration: 210 * time.Second,
+		Workers:  workerCnt,
+		CPUs:     cpus,
+		Hosts:    hosts,
+		Backlog:  100 * hosts,
+		Timeout:  40 * time.Second,
+		ResourceMapper: func(req *http.Request) []loadsim.ResourceNeed {
+			if req.Method == "GET" {
+				return []loadsim.ResourceNeed{
+					{"time", 500},
+					{"CPU", 2000},
+				}
+			}
+
+			return []loadsim.ResourceNeed{
+				{"time", 1200},
+				{"CPU", 400},
+			}
+		},
+		RequestOverhead: []loadsim.ResourceNeed{
+			{"time", 20},
+			{"CPU", 20},
+		},
+	}
+	prefix := "data"
+
+	clk := loadsim.NewSimClock()
+
+	listreq, err := http.NewRequest("GET", "https://qa-api.stripe.com/v1/charges?limit=100", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	listreq.SetBasicAuth("list", "")
+
+	var agents []loadsim.Agent
+
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("%s %s", listreq.Method, listreq.URL.Path)
+		delay := 30*time.Second + time.Millisecond*time.Duration(i*200)
+
+		agents = append(agents, &loadsim.DelayLimitAgent{
+			Agent: buildAgent(clk, id, listreq, nil, 0),
+			Delay: delay,
+			Limit: 120 * time.Second,
+			Clock: clk,
+		})
+	}
+
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("charge%d", i)
+		req, body := chargeCreate(id)
+		agents = append(agents, buildAgent(clk, id, req, body, 0))
+	}
+
+	cases := []struct {
+		Name          string
+		WallClockRate time.Duration
+	}{
+		{"no-limiter", 0},
+		{"limiter", time.Duration(workerCnt*hosts/2) * time.Second},
+	}
+
+	for _, simcase := range cases {
+		cfg.WallClockRate = simcase.WallClockRate
+		cfg.WallClockBurst = 5 * cfg.WallClockRate
+
+		results := simRun(cfg, agents, clk)
+
+		path := path.Join(prefix, fmt.Sprintf("%d_%s_qalist.tsv", start.Unix(), simcase.Name))
+		if err := writeResults(results, path); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func writeResults(results []loadsim.Result, path string) error {
 	os.Stderr.WriteString("\n" + path + "\n")
 	summarize(results, os.Stderr)
@@ -344,13 +427,26 @@ func simRun(cfg WorkerConfig, agents []loadsim.Agent, clk loadsim.Clock) []loads
 		for proc := 0; proc < cfg.Workers; proc++ {
 			time := &loadsim.TimeResource{}
 			allResources = append(allResources, time)
+			workerResources := []loadsim.Resource{cpu, time}
 
-			workers = append(workers, &loadsim.SimWorker{
+			var worker loadsim.Worker
+			worker = &loadsim.SimWorker{
 				ResourceMapper: cfg.ResourceMapper,
-				Resources:      []loadsim.Resource{cpu, time},
+				Resources:      workerResources,
 				Clock:          clk,
 				Limiter:        limiter,
-			})
+			}
+
+			if len(cfg.RequestOverhead) > 0 {
+				worker = &loadsim.WorkerOverhead{
+					Worker:    worker,
+					Clock:     clk,
+					Resources: workerResources,
+					Needs:     cfg.RequestOverhead,
+				}
+			}
+
+			workers = append(workers, worker)
 		}
 	}
 	worker := loadsim.WorkerPool{

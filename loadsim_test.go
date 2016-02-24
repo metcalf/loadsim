@@ -19,11 +19,11 @@ func (r DummyResource) Reset()       {}
 
 type DummyMapper []loadsim.ResourceNeed
 
-func (m DummyMapper) RequestNeeds(req *http.Request) []*loadsim.ResourceNeed {
-	needs := make([]*loadsim.ResourceNeed, len(m))
+func (m DummyMapper) RequestNeeds(req *http.Request) []loadsim.ResourceNeed {
+	needs := make([]loadsim.ResourceNeed, len(m))
 	for i, need := range m {
 		needCopy := need
-		needs[i] = &needCopy
+		needs[i] = needCopy
 	}
 
 	return needs

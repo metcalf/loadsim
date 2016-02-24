@@ -77,7 +77,7 @@ type ResourceNeed struct {
 	Value int
 }
 
-type ResourceMapper func(*http.Request) []*ResourceNeed
+type ResourceMapper func(*http.Request) []ResourceNeed
 
 type SimWorker struct {
 	ResourceMapper ResourceMapper
@@ -122,7 +122,9 @@ func (w *SimWorker) do(ticker <-chan time.Time, task Task, start time.Time) time
 	var now time.Time
 	for now = range ticker {
 		// TODO: Handle the case where the need starts at zero
-		need := needs[0]
+		// Note that this needs to be a pointer or we're copying the
+		// original need every time.
+		need := &needs[0]
 
 		// TODO: optimize this with a map
 		for _, res := range w.Resources {
@@ -227,4 +229,81 @@ func (w *WorkerPool) Run(queue <-chan Task) {
 	}
 	close(workerQueue)
 	wg.Wait()
+}
+
+// WorkerOverhead is a worker that imposes an overhead of resource needs on
+// request before passing it on to the underlying worker.
+type WorkerOverhead struct {
+	Worker Worker
+	Clock  Clock
+
+	Resources []Resource
+	Needs     []ResourceNeed
+}
+
+func (w *WorkerOverhead) Run(queue <-chan Task) {
+	workerQueue := make(chan Task)
+	go w.Worker.Run(workerQueue)
+
+	ticker, tickStop := w.Clock.Tick()
+
+	now := w.Clock.Now()
+	for {
+		select {
+		case task := <-queue:
+			// Zero value indicates a closed channel
+			if task.Request == nil {
+				close(tickStop)
+				close(workerQueue)
+				return
+			}
+			now = w.do(ticker, now)
+
+			var queued bool
+			for !queued {
+				select {
+				case workerQueue <- task:
+					queued = true
+				case now = <-ticker:
+				}
+			}
+		case now = <-ticker:
+		}
+	}
+}
+
+func (w *WorkerOverhead) do(ticker <-chan time.Time, now time.Time) time.Time {
+	needs := make([]ResourceNeed, len(w.Needs))
+	for i, need := range w.Needs {
+		needs[i] = need
+	}
+
+	for now = range ticker {
+		// TODO: Handle the case where the need starts at zero
+		// Note that this needs to be a pointer or we're copying the
+		// original need every time.
+		need := &needs[0]
+
+		// TODO: DRY this with SimWorker
+		for _, res := range w.Resources {
+			if res.Name() != need.Name {
+				continue
+			}
+			got := res.Ask(need.Value)
+
+			if got > 0 {
+				need.Value -= got
+				break
+			}
+		}
+		if need.Value <= 0 {
+			needs = needs[1:]
+		}
+
+		if len(needs) == 0 {
+			break
+		}
+	}
+
+	return now
 }
