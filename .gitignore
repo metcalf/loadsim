@@ -26,3 +26,4 @@ _testmain.go
 data/
 remote.sh
 loadsim
+cmd/stripe.go
